@@ -2,7 +2,7 @@
 
 A debugger for Hugging Face chat templates: see the exact prompt a model gets, and what the template silently did to your conversation.
 
-**Live:** LIVE_URL
+**Live:** https://template-lab-mu.vercel.app
 
 ## The pain
 
