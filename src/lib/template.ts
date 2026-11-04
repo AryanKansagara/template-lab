@@ -301,7 +301,7 @@ export function diffUnits(text: string, specials: string[] = []): string[] {
   return units
 }
 
-/** LCS diff of two unit arrays. ponytail: O(n·m) memory, fine for chat-sized prompts (<~3k units). */
+/** LCS diff of two unit arrays. O(n·m) memory, fine for chat-sized prompts (<~3k units). */
 export function diff(a: string[], b: string[]): DiffOp[] {
   const n = a.length
   const m = b.length
