@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { render, lint, segment, diff, diffUnits, templateKwargs, CHATML_FALLBACK, type ChatMessage, type RenderInput } from './template.ts'
+import { render, lint, pyRepr, segment, diff, diffUnits, templateKwargs, CHATML_FALLBACK, type ChatMessage, type RenderInput } from './template.ts'
 
 type Fx = { chat_template: string; bos_token: string | null; eos_token: string; add_bos_token: boolean | null }
 const fx: Record<string, Fx> = JSON.parse(readFileSync(new URL('./real-templates.fixture.json', import.meta.url), 'utf8'))
@@ -154,4 +154,38 @@ test('diff on units keeps both sides reconstructable', () => {
   assert.equal(ops.filter((o) => o.op !== 'add').map((o) => o.text).join(''), a)
   assert.equal(ops.filter((o) => o.op !== 'del').map((o) => o.text).join(''), b)
   assert.deepEqual(diff(['x', 'y'], ['x', 'y']), [{ op: 'same', text: 'xy' }])
+})
+
+test('SmolLM3 renders tools with `| string` exactly as Python repr()', () => {
+  const tools = [{ type: 'function', function: { name: 'get_weather', description: "Get today's weather", parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'], strict: true, x: null } } }]
+  const r = render(input('smollm3', { messages: [{ role: 'user', content: 'hi' }], tools }))
+  assert.ok(r.ok)
+  // Expected line produced by CPython 3 str(dict) on the same tool.
+  assert.ok(r.text.includes(`{'type': 'function', 'function': {'name': 'get_weather', 'description': "Get today's weather", 'parameters': {'type': 'object', 'properties': {'city': {'type': 'string'}}, 'required': ['city'], 'strict': True, 'x': None}}}`))
+  assert.ok(ids(lintFor('smollm3', { tools })).includes('tools'))
+})
+
+test('pyRepr matches Python for strings, nesting and floats', () => {
+  assert.equal(pyRepr(new Map<string, unknown>([['a', 'it\'s "x"'], ['b', [1, false]]])), `{'a': 'it\\'s "x"', 'b': [1, False]}`)
+  assert.equal(pyRepr({ type: 'FloatValue', value: 18 }), '18.0')
+  assert.deepEqual(render({ template: '{{ x | string }}|{{ (y | string) }}', messages: [], addGenerationPrompt: false, kwargs: { x: 'plain', y: [1, 'a'] } }), { ok: true, text: "plain|[1, 'a']" })
+})
+
+test('Mistral v0.3 rejects tool call ids that are not 9 characters', () => {
+  const calls = (id: string): ChatMessage[] => [
+    { role: 'user', content: 'Weather?' },
+    { role: 'assistant', content: '', tool_calls: [{ id, type: 'function', function: { name: 'get_weather', arguments: { city: 'Paris' } } }] },
+    { role: 'tool', content: '{"temp": 18}', tool_call_id: id },
+  ]
+  const bad = lintFor('mistral03', { messages: calls('call_1'), tools: weather })
+  assert.equal(bad[0].id, 'raise')
+  assert.match(bad[0].title, /length 9/)
+  assert.ok(render(input('mistral03', { messages: calls('abc123xyz'), tools: weather })).ok)
+})
+
+test('Mistral v0.3 prefix mismatch is attributed to the moved system prompt', () => {
+  const msgs: ChatMessage[] = [...chat, { role: 'assistant', content: 'Hello.' }, { role: 'user', content: 'More?' }]
+  const p = lintFor('mistral03', { messages: msgs }).find((i) => i.id === 'prefix-mismatch')
+  assert.ok(p)
+  assert.match(p.detail, /system prompt lands in a different turn/)
 })

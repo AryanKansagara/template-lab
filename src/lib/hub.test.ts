@@ -79,3 +79,15 @@ test('share state round-trips through the URL encoding', async () => {
   assert.deepEqual(await decodeState(s), state)
   assert.equal(await decodeState('garbage!!'), null)
 })
+
+test('falls back to chat_template.json (Mistral Small 3.1 layout) and accepts /blob/ URLs', async () => {
+  const { f, calls } = fakeFetch({
+    'tokenizer_config.json': reply(200, { bos_token: '<s>', eos_token: '</s>', add_bos_token: true }),
+    'chat_template.json': reply(200, { chat_template: '{{- bos_token }}[SYSTEM_PROMPT]{{ messages[0].content }}[/SYSTEM_PROMPT]' }),
+  })
+  const m = await fetchModelTemplate('https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/blob/main/chat_template.json', f)
+  assert.equal(m.id, 'mistralai/Mistral-Small-3.1-24B-Instruct-2503')
+  assert.equal(m.source, 'chat_template.json')
+  assert.equal(m.addBosToken, true)
+  assert.ok(calls.some((u) => u.endsWith('/chat_template.jinja')))
+})

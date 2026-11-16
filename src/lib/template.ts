@@ -36,6 +36,31 @@ export const CHATML_FALLBACK =
 
 class RaiseError extends Error {}
 
+const STRING_FILTER = /(?<![\w.])([A-Za-z_][\w.]*(?:\[[^\]]*\])*)\s*\|\s*string\b/g
+
+const pyQuote = (s: string) => {
+  const q = s.includes("'") && !s.includes('"') ? '"' : "'"
+  return q + s.replace(/\\/g, '\\\\').replace(new RegExp(q, 'g'), '\\' + q).replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r') + q
+}
+
+/** Python repr() of a value as the jinja runtime hands it over (Map for dicts, runtime values inside). */
+export function pyRepr(v: unknown): string {
+  if (v instanceof Map) return '{' + [...v].map(([k, x]) => `${pyRepr(k)}: ${pyRepr(x)}`).join(', ') + '}'
+  if (Array.isArray(v)) return '[' + v.map(pyRepr).join(', ') + ']'
+  if (v && typeof v === 'object' && 'type' in v && 'value' in v) {
+    const r = v as { type: string; value: unknown }
+    if (r.type === 'FloatValue' && Number.isInteger(r.value)) return `${r.value}.0`
+    return pyRepr(r.value)
+  }
+  if (typeof v === 'string') return pyQuote(v)
+  if (typeof v === 'boolean') return v ? 'True' : 'False'
+  if (v == null) return 'None'
+  if (v && typeof v === 'object') return pyRepr(new Map(Object.entries(v)))
+  return String(v)
+}
+
+const pyStr = (v: unknown) => (typeof v === 'string' ? v : pyRepr(v))
+
 const compiled = new Map<string, Template | RenderError>()
 
 function compile(src: string): Template | RenderError {
@@ -43,7 +68,8 @@ function compile(src: string): Template | RenderError {
   if (!t) {
     try {
       // Route raise_exception to our own function so we can tell it apart from crashes (the builtin can't be overridden).
-      t = new Template(src.replace(/\braise_exception\s*\(/g, '__tl_raise('))
+      // `x | string` on a dict or list is Python's repr in transformers; @huggingface/jinja can't do it for objects.
+      t = new Template(src.replace(/\braise_exception\s*\(/g, '__tl_raise(').replace(STRING_FILTER, '__tl_str($1)'))
     } catch (e) {
       t = { kind: 'parse', message: (e as Error).message }
     }
@@ -63,6 +89,7 @@ export function render(input: RenderInput): RenderResult {
       messages: input.messages,
       tools: input.tools?.length ? input.tools : null,
       add_generation_prompt: input.addGenerationPrompt,
+      __tl_str: pyStr,
       __tl_raise: (msg: unknown) => {
         throw new RaiseError(String(msg))
       },
@@ -182,7 +209,11 @@ export function lint(ctx: LintContext): Issue[] {
         add('ok', 'prefix', 'Prompt is a prefix of the training render', 'render(messages[:-1], add_generation_prompt=True) lines up with the full conversation, so loss masking and KV-cache reuse work.')
       } else {
         const at = firstDiff(prompt.text, full.text)
-        add('warn', 'prefix-mismatch', 'Inference prompt diverges from training format', `The generation prompt is not a prefix of the rendered conversation (diverges at char ${at}: ${JSON.stringify(prompt.text.slice(at, at + 24))} vs ${JSON.stringify(full.text.slice(at, at + 24))}). Common with reasoning templates that strip past <think> blocks; breaks assistant-only loss masks and prefix caching.`)
+        const sys = msgs.find((m) => m.role === 'system')?.content
+        const why = sys && prompt.text.indexOf(sys) !== full.text.indexOf(sys)
+          ? 'The system prompt lands in a different turn depending on where the conversation ends (Mistral v0.3 attaches it to the last user message)'
+          : 'Common with reasoning templates that strip past <think> blocks'
+        add('warn', 'prefix-mismatch', 'Inference prompt diverges from training format', `The generation prompt is not a prefix of the rendered conversation (diverges at char ${at}: ${JSON.stringify(prompt.text.slice(at, at + 24))} vs ${JSON.stringify(full.text.slice(at, at + 24))}). ${why}; this breaks assistant-only loss masks and prefix caching.`)
       }
     }
   }
