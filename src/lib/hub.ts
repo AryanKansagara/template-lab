@@ -138,7 +138,8 @@ export async function fetchModelTemplate(rawId: string, f: Fetch = fetch): Promi
   const id = rawId.trim().replace(/^https?:\/\/huggingface\.co\//, '').replace(/\/(tree|blob|resolve)\/.*$/, '').replace(/\/$/, '')
   if (!ID_RE.test(id)) throw new HubError('invalid', 'Model ids look like org/name, e.g. Qwen/Qwen2.5-7B-Instruct.')
 
-  const cfgRes = await get(id, 'tokenizer_config.json', f)
+  // Like transformers, a standalone chat_template.jinja wins over chat_template in tokenizer_config.json.
+  const [cfgRes, jinja] = await Promise.all([get(id, 'tokenizer_config.json', f), get(id, 'chat_template.jinja', f)])
   let cfg: Record<string, unknown> = {}
   if (cfgRes) {
     try {
@@ -148,11 +149,10 @@ export async function fetchModelTemplate(rawId: string, f: Fetch = fetch): Promi
     }
   }
   const model = parseConfig(id, cfg)
+  if (jinja) return { ...model, templates: [{ name: 'default', template: await jinja.text() }], source: 'chat_template.jinja' }
   if (model.templates.length) return model
 
-  // Newer repos keep the template in its own file.
-  const jinja = await get(id, 'chat_template.jinja', f)
-  if (jinja) return { ...model, templates: [{ name: 'default', template: await jinja.text() }], source: 'chat_template.jinja' }
+  // Multimodal processors keep it in chat_template.json.
   const json = await get(id, 'chat_template.json', f)
   if (json) {
     const templates = parseTemplates((await json.json().catch(() => ({})))?.chat_template)

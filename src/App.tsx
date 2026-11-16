@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import Landing from './Landing.tsx'
+import Docs from './Docs.tsx'
 
 const Lab = lazy(() => import('./Lab.tsx'))
 
@@ -74,15 +75,15 @@ export default function App() {
             <span>Template Lab</span>
           </Link>
           <nav className="nav" aria-label="Main">
-            <Link href="/" aria-current={!inLab ? 'page' : undefined}>
+            <Link href="/" aria-current={path === '/' ? 'page' : undefined}>
               Overview
             </Link>
             <Link href="/app" aria-current={inLab ? 'page' : undefined}>
               Lab
             </Link>
-            <a href="https://huggingface.co/docs/transformers/main/en/chat_templating" target="_blank" rel="noreferrer">
-              Chat template docs
-            </a>
+            <Link href="/docs" aria-current={path === '/docs' ? 'page' : undefined}>
+              Docs
+            </Link>
           </nav>
           <div className="topbar-actions">
             <ThemeToggle />
@@ -99,6 +100,8 @@ export default function App() {
           <Suspense fallback={<div className="lab-loading">Loading lab…</div>}>
             <Lab />
           </Suspense>
+        ) : path === '/docs' ? (
+          <Docs />
         ) : (
           <Landing />
         )}

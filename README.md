@@ -10,7 +10,8 @@ A debugger for Hugging Face chat templates: see the exact prompt a model gets, a
 
 ## Features
 
-- Load any public Hub model by id or URL, from `tokenizer_config.json`, `chat_template.jinja` or `chat_template.json`, including named templates. Or paste a template.
+- Load any public Hub model by id or URL, from `tokenizer_config.json`, `chat_template.jinja` (which wins when both exist, as in transformers) or `chat_template.json`, including named templates. Or paste a template.
+- Python-faithful rendering details: `raise_exception`, `strftime_now`, and `| string` on dicts printing Python `repr()` (SmolLM3 tool schemas).
 - Gated repos are explained, with a verified ungated copy to try.
 - Conversation editor: system, user, assistant and tool messages, tool calls, tool schemas, `add_generation_prompt`, extra kwargs. Renders live with `@huggingface/jinja`.
 - Output with special tokens highlighted and whitespace drawn.
@@ -18,6 +19,10 @@ A debugger for Hugging Face chat templates: see the exact prompt a model gets, a
 - Linter: double BOS, ignored generation prompt, dropped system or tool messages, ignored tools, dropped tool calls, `raise_exception` paths, trailing whitespace, inference/training prefix mismatch, unused kwargs, missing template.
 - Compare one conversation across two models, with a prompt diff and token delta.
 - Shareable URLs: the whole setup is compressed into the hash. Everything runs in the browser.
+
+## Tested against real templates
+
+`/docs` lists a dated survey of 20 public Hub models (Qwen, Mistral, Llama, Gemma, Phi, SmolLM, DeepSeek, Granite, OLMo, Hermes, Kimi, GLM, gpt-oss) loaded and linted with this app's own code. The test suite renders real templates copied from those repos.
 
 ## Run locally
 

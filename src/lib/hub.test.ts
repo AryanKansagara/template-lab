@@ -91,3 +91,14 @@ test('falls back to chat_template.json (Mistral Small 3.1 layout) and accepts /b
   assert.equal(m.addBosToken, true)
   assert.ok(calls.some((u) => u.endsWith('/chat_template.jinja')))
 })
+
+test('chat_template.jinja takes priority over tokenizer_config, as in transformers', async () => {
+  const { f } = fakeFetch({
+    'tokenizer_config.json': reply(200, { chat_template: 'old', eos_token: '</s>' }),
+    'chat_template.jinja': reply(200, 'new'),
+  })
+  const m = await fetchModelTemplate('org/both', f)
+  assert.equal(m.source, 'chat_template.jinja')
+  assert.deepEqual(m.templates, [{ name: 'default', template: 'new' }])
+  assert.equal(m.specials.eos_token, '</s>')
+})
