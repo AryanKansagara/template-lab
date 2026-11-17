@@ -109,7 +109,7 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>
-            Built by <a href="https://github.com/AryanKansagara">Aryan Kansagara</a>. Independent project, not affiliated with Hugging Face.
+            Built by <a href="https://github.com/AryanKansagara">Aryan Kansagara</a>.
           </span>
           <span className="muted">Renders with @huggingface/jinja · tokenizes with transformers.js · runs entirely in your browser</span>
         </div>
