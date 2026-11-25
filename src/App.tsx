@@ -34,7 +34,11 @@ function ThemeToggle() {
       title={`Switch to ${next} theme`}
       onClick={() => {
         document.documentElement.dataset.themeMode = next
-        localStorage.setItem('themeMode', next)
+        try {
+          localStorage.setItem('themeMode', next)
+        } catch {
+          // not remembered, still applied
+        }
         setMode(next)
       }}
     >

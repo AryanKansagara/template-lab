@@ -12,7 +12,10 @@
     <script>
       ;(function () {
         var q = new URLSearchParams(location.search).get('mode')
-        var m = q || localStorage.getItem('themeMode')
+        var m = q
+        try {
+          m = m || localStorage.getItem('themeMode')
+        } catch (e) {}
         document.documentElement.dataset.themeMode = m === 'light' || m === 'dark' ? m : document.documentElement.dataset.defaultMode
       })()
     </script>

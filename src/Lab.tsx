@@ -215,7 +215,16 @@ export default function Lab() {
     return () => removeEventListener('hashchange', applyHash)
   }, [])
 
-  useEffect(() => localStorage.setItem(STORE, JSON.stringify(state)), [state])
+  const [unsaved, setUnsaved] = useState(false)
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORE, JSON.stringify(state))
+      setUnsaved(false)
+    } catch {
+      // Over quota, or storage is blocked: the lab still works, it just can't be remembered.
+      setUnsaved(true)
+    }
+  }, [state])
 
   function flash(msg: string) {
     setToast(msg)
@@ -325,6 +334,11 @@ export default function Lab() {
 
   return (
     <div className="lab">
+      {unsaved && (
+        <p className="input-errors unsaved" role="alert">
+          This browser can’t save your setup (its storage is full or blocked). Everything still works, but a reload will lose your latest changes.
+        </p>
+      )}
       {/* ------------------------------------------------ source bar */}
       <section className="card source" aria-label="Template source">
         <div className="source-top">
