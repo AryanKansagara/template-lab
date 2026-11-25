@@ -93,6 +93,31 @@ test('the kwarg shortcut erases nothing that was typed and says when the kwargs 
   }
 })
 
+for (const [name, clipboard] of [['refuses', 'rejects'], ['is missing', 'missing']] as const) {
+  test(`when the clipboard ${name}, Copy says so and offers the exact prompt`, async ({ page }) => {
+    await openLab(page)
+    await paste(page, '{{ messages[0].content }}\n  two  \n')
+    await conversation(page, [{ role: 'user', content: 'one' }])
+    await tab(page, 'Rendered')
+    await page.evaluate((c) => Object.defineProperty(navigator, 'clipboard', { value: c === 'missing' ? undefined : { writeText: () => Promise.reject(new Error('denied')) }, configurable: true }), clipboard)
+    await page.getByRole('button', { name: 'Copy', exact: true }).click()
+    await expect(page.getByRole('status')).toHaveText('Copying failed: your browser refused clipboard access.')
+    const box = page.getByLabel('Your browser refused to copy')
+    await expect(box).toHaveValue('one\n  two  ')
+    await expect(box).toBeFocused()
+    expect(await box.evaluate((el: HTMLTextAreaElement) => el.value.slice(el.selectionStart, el.selectionEnd))).toBe('one\n  two  ')
+    // A prompt that has changed since is not offered, and a copy that works takes the box away.
+    await page.getByLabel('Message 1 content').fill('new')
+    await expect(box).toHaveCount(0)
+    await page.getByRole('button', { name: 'Copy', exact: true }).click()
+    await expect(box).toHaveValue('new\n  two  ')
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => undefined }, configurable: true }))
+    await page.getByRole('button', { name: 'Copy', exact: true }).click()
+    await expect(page.getByRole('status')).toHaveText('Rendered prompt copied')
+    await expect(box).toHaveCount(0)
+  })
+}
+
 test('linter: dropped system message, ignored generation prompt, trailing space, prefix mismatch', async ({ page }) => {
   await openLab(page)
   await conversation(page, [{ role: 'system', content: 'Rules' }, { role: 'user', content: 'Hi' }])

@@ -203,6 +203,8 @@ export default function Lab() {
   const [mode, setMode] = useState<'hub' | 'paste'>(() => (state.model ? 'hub' : 'paste'))
   const [draft, setDraft] = useState(state.model || state.hubModel)
   const [compareDraft, setCompareDraft] = useState(state.compare)
+  /** a prompt the browser refused to copy, offered for copying by hand while it is still the one shown */
+  const [uncopied, setUncopied] = useState<string | null>(null)
   const [toast, setToast] = useState('')
   /** the Hub template the paste tab started from */
   const copied = useRef<string | null>(null)
@@ -319,6 +321,17 @@ export default function Lab() {
 
   const counts = A ? summarize(A.issues) : null
   const kwargsDetected = useMemo(() => templateKwargs(A?.template ?? ''), [A?.template])
+
+  async function copyPrompt(text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setUncopied(null)
+      flash('Rendered prompt copied')
+    } catch {
+      setUncopied(text)
+      flash('Copying failed: your browser refused clipboard access.')
+    }
+  }
 
   async function share() {
     const s = await encodeState({ ...state, pasted: DEFAULT.pasted, hubEdit: DEFAULT.hubEdit, hubModel: DEFAULT.hubModel })
@@ -600,9 +613,15 @@ export default function Lab() {
                   <span className="muted small">{A?.result.ok ? `${A.result.text.length.toLocaleString()} chars${tokensA ? ` · ${tokensA.ids.length.toLocaleString()} tokens` : ''}` : ''}</span>
                   <span className="pane-tools">
                     <label className="check"><input type="checkbox" checked={showWs} onChange={(e) => setShowWs(e.target.checked)} /> whitespace</label>
-                    {A?.result.ok && <button className="btn btn-sm" onClick={() => { navigator.clipboard.writeText((A.result as { text: string }).text); flash('Rendered prompt copied') }}>Copy</button>}
+                    {A?.result.ok && <button className="btn btn-sm" onClick={() => copyPrompt((A.result as { text: string }).text)}>Copy</button>}
                   </span>
                 </div>
+                {A?.result.ok && uncopied === A.result.text && (
+                  <label>
+                    <span className="small err-text">Your browser refused to copy. Copy the prompt from here instead:</span>
+                    <textarea className="code-area" readOnly autoFocus rows={5} value={uncopied} onFocus={(e) => e.target.select()} />
+                  </label>
+                )}
                 {A ? <Output built={A} showWs={showWs} /> : <Placeholder hub={hubA} />}
               </div>
             )}

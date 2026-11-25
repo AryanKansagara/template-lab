@@ -1,6 +1,6 @@
 import { test, expect, openLab, paste, conversation, prompt, issue, setSwitch, loadModel, stored, tab, shareHash } from './fixtures.ts'
 
-// Each test states the right behaviour of a filed bug. Those marked test.fail are not fixed yet.
+// Each test states the right behaviour of a filed bug.
 
 const CHAT = '{% for m in messages %}<|{{ m.role }}|>{{ m.content }}<|end|>{% endfor %}{% if add_generation_prompt %}<|assistant|>{% endif %}'
 const counts = '.card.lint .counts'
@@ -107,7 +107,7 @@ test('#14 JSON numbers keep their Python form', async ({ page }) => {
   await expect.poll(() => prompt(page), { timeout: 3000 }).toBe('[1.0, 12345678901234567890]')
 })
 
-test.fail('#15 a refused copy is not reported as copied', async ({ page }) => {
+test('#15 a refused copy is not reported as copied', async ({ page }) => {
   await openLab(page)
   await paste(page, 'x')
   await tab(page, 'Rendered')
