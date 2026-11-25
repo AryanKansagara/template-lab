@@ -189,3 +189,26 @@ test('Mistral v0.3 prefix mismatch is attributed to the moved system prompt', ()
   assert.ok(p)
   assert.match(p.detail, /system prompt lands in a different turn/)
 })
+
+// Expected values produced by Jinja2 3.1.6 configured as in transformers' chat_template_utils.py.
+test('`| string` and raise_exception are only hooked where they are code', () => {
+  const r = (template: string, kwargs: Record<string, unknown> = {}) => {
+    const out = render({ template, messages: [], addGenerationPrompt: false, kwargs })
+    return out.ok ? out.text : `${out.error.kind}: ${out.error.message}`
+  }
+  assert.equal(r('Return: number | string.'), 'Return: number | string.')
+  assert.equal(r("{{ 'union: number | string' }}"), 'union: number | string')
+  assert.equal(r('{{ "call raise_exception(\'x\')" }} raise_exception(now)'), "call raise_exception('x') raise_exception(now)")
+  assert.equal(r('{# a | string #}ok'), 'ok')
+  assert.equal(r('{{ nothing | string }}|{{ x.nothing | string }}|', { x: {} }), '||')
+  assert.equal(r('{{ x | string }}', { x: null }), 'None')
+  assert.equal(r('{{ (x) | string }}', { x: { a: 1 } }), "{'a': 1}")
+  assert.equal(r("{{ {'a': 1} | string }} {{ [1, 2] | string }} {{ 5 | string }} {{ 1.0 | string }}"), "{'a': 1} [1, 2] 5 1.0")
+  assert.equal(r('{{ x | list | string }}', { x: ['a', true] }), "['a', True]")
+  assert.equal(r('{{ x | string | upper }}{{ x | string() }}', { x: { a: 1 } }), "{'A': 1}{'a': 1}")
+  assert.equal(r("{% set y = x | string %}{% if x | string == '[1]' %}{{ 'p' + y }}{% endif %}", { x: [1] }), 'p[1]')
+  assert.equal(r('{% macro f(v) %}{{ v | string }}{% endmacro %}{{ f(x) }}', { x: [1] }), '[1]')
+  assert.equal(r("{{ {'k': x | string}['k'] }}", { x: [1] }), '[1]')
+  assert.equal(r("{% if x is string %}s{% endif %}", { x: 'a' }), 's')
+  assert.equal(r("{{ raise_exception('no ' + x) }}", { x: 'way' }), 'raise: no way')
+})

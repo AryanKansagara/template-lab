@@ -36,8 +36,6 @@ export const CHATML_FALLBACK =
 
 class RaiseError extends Error {}
 
-const STRING_FILTER = /(?<![\w.])([A-Za-z_][\w.]*(?:\[[^\]]*\])*)\s*\|\s*string\b/g
-
 const pyQuote = (s: string) => {
   const q = s.includes("'") && !s.includes('"') ? '"' : "'"
   return q + s.replace(/\\/g, '\\\\').replace(new RegExp(q, 'g'), '\\' + q).replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r') + q
@@ -59,7 +57,34 @@ export function pyRepr(v: unknown): string {
   return String(v)
 }
 
-const pyStr = (v: unknown) => (typeof v === 'string' ? v : pyRepr(v))
+/** Python str() of a one-item list: inside a list the engine keeps the runtime type (1.0, undefined), which it strips from plain arguments. */
+const pyStr = ([v]: { type: string; value: unknown }[]) => (v.type === 'UndefinedValue' ? '' : v.type === 'StringValue' ? v.value : pyRepr(v))
+
+type Node = { type?: string; value?: unknown; callee?: Node; filter?: Node; operand?: Node; args?: unknown[]; [k: string]: unknown }
+
+/**
+ * Route `x | string` and `raise_exception(...)` to our own functions, on the parsed template so that plain text,
+ * literals and comments that merely look like them are left alone.
+ */
+function hook(x: unknown): void {
+  if (Array.isArray(x)) return x.forEach(hook)
+  if (x instanceof Map) return x.forEach((v, k) => (hook(k), hook(v)))
+  if (!x || typeof x !== 'object') return
+  const n = x as Node
+  Object.values(n).forEach(hook)
+  if (n.type === 'CallExpression' && n.callee?.type === 'Identifier' && n.callee.value === 'raise_exception') n.callee.value = '__tl_raise'
+  // `x | string` becomes __tl_str(x). The filter takes no arguments.
+  if (n.type === 'FilterExpression') {
+    const f = n.filter!
+    const name = f.type === 'CallExpression' ? f.callee : f
+    if (name?.type === 'Identifier' && name.value === 'string' && !f.args?.length) {
+      const operand = n.operand
+      delete n.operand
+      delete n.filter
+      Object.assign(n, { type: 'CallExpression', callee: { type: 'Identifier', value: '__tl_str' }, args: [{ type: 'ArrayLiteral', value: [operand] }] })
+    }
+  }
+}
 
 const compiled = new Map<string, Template | RenderError>()
 
@@ -67,9 +92,10 @@ function compile(src: string): Template | RenderError {
   let t = compiled.get(src)
   if (!t) {
     try {
-      // Route raise_exception to our own function so we can tell it apart from crashes (the builtin can't be overridden).
-      // `x | string` on a dict or list is Python's repr in transformers; @huggingface/jinja can't do it for objects.
-      t = new Template(src.replace(/\braise_exception\s*\(/g, '__tl_raise(').replace(STRING_FILTER, '__tl_str($1)'))
+      // raise_exception is hooked to tell it apart from crashes (the builtin can't be overridden);
+      // `x | string` because it is Python's repr in transformers, which @huggingface/jinja can't do for objects.
+      t = new Template(src)
+      hook(t.parsed)
     } catch (e) {
       t = { kind: 'parse', message: (e as Error).message }
     }

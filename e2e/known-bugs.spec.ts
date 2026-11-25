@@ -5,7 +5,7 @@ import { test, expect, openLab, paste, conversation, prompt, issue, setSwitch, l
 const CHAT = '{% for m in messages %}<|{{ m.role }}|>{{ m.content }}<|end|>{% endfor %}{% if add_generation_prompt %}<|assistant|>{% endif %}'
 const counts = '.card.lint .counts'
 
-test.fail('#2 "| string" in plain text and literals is left alone', async ({ page }) => {
+test('#2 "| string" in plain text and literals is left alone', async ({ page }) => {
   await openLab(page)
   await paste(page, "Return: number | string. {{ 'union: number | string' }}")
   await expect.poll(() => prompt(page)).toBe('Return: number | string. union: number | string')
