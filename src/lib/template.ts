@@ -275,6 +275,20 @@ const rank: Record<Severity, number> = { error: 0, warn: 1, info: 2, ok: 3 }
 /** Marker that survives trim/split/startswith logic in real templates. */
 const marker = (i: number) => `⟦m${i}⟧`
 
+/** Advice for a raise that mentions the system role: is there none, or is it only refused where it is? */
+function systemHint(message: string, msgs: ChatMessage[]): string | undefined {
+  const noRole =
+    /\bsystem(?: (?:role|message|prompt|instruction)s?)?(?: (?:is|are))? ?(?:not (?:supported|allowed|accepted|permitted)|unsupported)(?: (?:by|for|in|with) (?:this|the) (?:model|template|chat template))?\s*(?:[.!;:,('"]|$)/i.test(message) ||
+    /(?:not|n[’']t) (?:support|allow|accept|have) (?:a |any |the )?system(?: (?:role|message|prompt|instruction)s?)?\s*(?:[.!;:,('"]|$)/i.test(message) ||
+    /\bno system (?:role|message|prompt)/i.test(message)
+  if (noRole) return 'This model has no system role. Fold the system prompt into the first user message.'
+  if (!/\b(?:begin(?:ning)?|start|first|initial|leading|position|precede|before|top)\b/i.test(message)) return
+  const late = msgs.findIndex((m, i) => m.role === 'system' && i > 0)
+  if (late > 0) return `The template takes a system message only at the start of the conversation. Move message #${late + 1} there${msgs[0].role === 'system' ? ', merged into the first one' : ''}.`
+  if (msgs.some((m) => m.role === 'tool')) return 'Besides an optional system message at the start, the template takes only the roles it names, which leaves out the tool messages here.'
+  return 'The template takes a system message only at the start of the conversation.'
+}
+
 export function lint(ctx: LintContext): Issue[] {
   const issues: Issue[] = []
   const add = (severity: Severity, id: string, title: string, detail: string) => issues.push({ id, severity, title, detail })
@@ -298,7 +312,7 @@ export function lint(ctx: LintContext): Issue[] {
     if (kind === 'raise') {
       let hint = 'The template refuses this conversation shape.'
       if (/alternat/i.test(message)) hint = 'Merge consecutive same-role messages, or make sure the conversation (after an optional system message) starts with user and alternates.'
-      else if (/system/i.test(message)) hint = 'This model has no system role. Fold the system prompt into the first user message.'
+      else if (/system/i.test(message)) hint = systemHint(message, base.messages) ?? hint
       else if (/tool/i.test(message)) hint = 'Check tool_call ids / tool message shape against what this template expects.'
       add('error', 'raise', `Template raised: ${message}`, `raise_exception() was hit, so apply_chat_template() throws for this conversation. ${hint}`)
     } else if (kind === 'parse') {

@@ -297,3 +297,19 @@ test('a prompt that starts with BOS twice is an error whatever the tokenizer add
   assert.deepEqual(on(C, null, undefined), [])
   assert.deepEqual(on(C, null, ''), [])
 })
+
+test('a raise about the system message gets the advice its text calls for', () => {
+  const late: ChatMessage[] = [{ role: 'user', content: 'a' }, { role: 'system', content: 'b' }]
+  const hint = (message: string, messages = late) =>
+    lint({ template: `{{ raise_exception(${JSON.stringify(message)}) }}`, input: { messages, addGenerationPrompt: true }, tokenizerAddsBos: null })[0].detail
+  for (const m of ['System role not supported', 'System role not supported!', 'System messages are not supported.', 'system role is not supported by this model', 'This model does not support system messages', "This template doesn't accept a system prompt.", 'No system role', 'System prompt not allowed'])
+    assert.match(hint(m), /no system role\. Fold/, m)
+  for (const m of ['System message must be at the beginning.', 'Only user and assistant roles are supported, with the exception of an initial optional system message!', 'System role must be first', 'System messages are only supported at the start of the conversation', 'System message not supported after the first turn', 'System message is not allowed in the middle of a conversation; put it first'])
+    assert.match(hint(m), /only at the start.*Move message #2 there\./, m)
+  assert.match(hint('System message must be at the beginning.', [{ role: 'system', content: 'x' }, ...late]), /Move message #3 there, merged into the first one/)
+  assert.match(hint('Only user and assistant roles are supported, with the exception of an initial optional system message!', [{ role: 'user', content: 'a' }, { role: 'tool', content: 'b' }]), /leaves out the tool messages/)
+  // Neither: no advice that could be wrong.
+  for (const m of ['System message cannot contain images.', 'System message must be a string', 'Unexpected item in system content'])
+    assert.match(hint(m), /refuses this conversation shape\.$/, m)
+  assert.match(hint('After the optional system message, conversation roles must alternate user/assistant'), /Merge consecutive/)
+})
