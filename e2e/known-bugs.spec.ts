@@ -92,7 +92,7 @@ test.fail('#12 a pasted template survives a visit to the Hub tab', async ({ page
   await expect(page.getByLabel('Chat template source')).toHaveValue('MINE', { timeout: 3000 })
 })
 
-test.fail('#13 a system message in the wrong place is not called a missing system role', async ({ page }) => {
+test('#13 a system message in the wrong place is not called a missing system role', async ({ page }) => {
   await openLab(page)
   await conversation(page, [{ role: 'user', content: 'a' }, { role: 'system', content: 'b' }])
   await paste(page, "{% for m in messages %}{% if m.role == 'system' and not loop.first %}{{ raise_exception('System message must be at the beginning.') }}{% endif %}{% endfor %}" + CHAT)
