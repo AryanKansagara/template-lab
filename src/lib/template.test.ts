@@ -151,7 +151,7 @@ test('segment splits known and heuristic special tokens', () => {
 test('diff on units keeps both sides reconstructable', () => {
   const a = '<|im_start|>user\nHi<|im_end|>\n'
   const b = '<s>[INST] Hi [/INST]'
-  const ops = diff(diffUnits(a), diffUnits(b))
+  const ops = diff(diffUnits(a), diffUnits(b))!
   assert.equal(ops.filter((o) => o.op !== 'add').map((o) => o.text).join(''), a)
   assert.equal(ops.filter((o) => o.op !== 'del').map((o) => o.text).join(''), b)
   assert.deepEqual(diff(['x', 'y'], ['x', 'y']), [{ op: 'same', text: 'xy' }])
@@ -325,4 +325,34 @@ test('"never read" follows what the template reads, not the words in it', () => 
   assert.deepEqual(unread(C, { role: 'x', content: 1, messages_: 2 }), ['role', 'content', 'messages_'])
   for (const [name, k] of [['qwen3', 'enable_thinking'], ['llama31', 'date_string'], ['llama31', 'tools_in_user_message'], ['smollm3', 'enable_thinking']])
     assert.ok(!ids(lintFor(name, { kwargs: { [k]: 'x' } })).includes(`kwarg-${k}`), `${name} ${k}`)
+})
+
+test('diff: shared starts and ends are free, long differences are refused, the rest is a shortest diff', () => {
+  const lines = (n: number, p = 'l') => Array.from({ length: n }, (_, i) => `${p}${i}\n`)
+  const long = lines(200_000)
+  assert.deepEqual(diff(long, long), [{ op: 'same', text: long.join('') }])
+  assert.deepEqual(diff([...long, 'x', ...long], [...long, 'y', ...long])!.map((o) => o.op), ['same', 'del', 'add', 'same'])
+  assert.deepEqual(diff(long, [])!.map((o) => o.op), ['del'])
+  assert.deepEqual(diff([], long)!.map((o) => o.op), ['add'])
+  assert.deepEqual(diff([], []), [])
+  // An insertion next to equal lines overlaps start and end.
+  assert.deepEqual(diff(['a', 'a'], ['a', 'a', 'a']), [{ op: 'same', text: 'aa' }, { op: 'add', text: 'a' }])
+  assert.equal(diff(lines(3001, 'a'), lines(3001, 'b')), null)
+  assert.equal(diff(lines(3000, 'a'), lines(3000, 'b'))!.length, 2)
+  assert.equal(diffUnits(long.join('')).length, 200_000)
+  // Every pair of words over two letters up to length 6, against the length of the longest common subsequence.
+  const words = [''].concat(...[1, 2, 3, 4, 5, 6].map((n) => Array.from({ length: 2 ** n }, (_, i) => i.toString(2).padStart(n, '0'))))
+  const lcs = (a: string, b: string): number => {
+    let row = new Array(b.length + 1).fill(0)
+    for (const c of a) row = row.reduce((next: number[], _, j) => (next.push(j === 0 ? 0 : c === b[j - 1] ? row[j - 1] + 1 : Math.max(row[j], next[j - 1])), next), [])
+    return row[b.length]
+  }
+  const text = (ops: ReturnType<typeof diff>, hide: string) => ops!.filter((o) => o.op !== hide).map((o) => o.text).join('')
+  for (const a of words)
+    for (const b of words) {
+      const ops = diff([...a], [...b])
+      assert.equal(text(ops, 'add'), a)
+      assert.equal(text(ops, 'del'), b)
+      assert.equal(ops!.filter((o) => o.op === 'same').reduce((n, o) => n + o.text.length, 0), lcs(a, b), `${a} ${b}`)
+    }
 })

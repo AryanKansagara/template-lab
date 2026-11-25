@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { chooseTemplate, DEFAULT_MODELS, fetchModelTemplate, HubError, parseModelRef, refLabel, type ModelTemplate, type TemplateChoice } from './lib/hub.ts'
-import { CHATML_FALLBACK, diff, diffUnits, lint, render, templateKwargs, type ChatMessage, type Issue, type RenderResult, type Role, type SpecialTokens } from './lib/template.ts'
+import { CHATML_FALLBACK, diff, diffUnits, lint, MAX_DIFF_UNITS, render, templateKwargs, type ChatMessage, type Issue, type RenderResult, type Role, type SpecialTokens } from './lib/template.ts'
 import { parsePython, PyFloat } from './lib/json.ts'
 import { decodeState, encodeState } from './lib/share.ts'
 import { SAMPLES, WEATHER_TOOLS, type UIMsg } from './samples.ts'
@@ -811,10 +811,17 @@ function Compare({ a, b, nameA, nameB, tokA, tokB, showWs, tokenizeOn, onTokeniz
           )}
         </div>
       </div>
+      {ta !== null && tb !== null && !ops && (
+        <p className="muted small" role="status">
+          Diff skipped: the parts of these prompts that differ are too long to compare here (the limit is about {MAX_DIFF_UNITS.toLocaleString('en-US')} lines and special tokens on each side). Both prompts are shown in full.
+        </p>
+      )}
       <div className="cmp-grid">
         {sides.map((x, i) => (
           <div key={i} className="cmp-col">
-            {x.text === null || !ops ? (
+            {x.text === null ? (
+              <Output built={x.built} showWs={showWs} />
+            ) : !ops ? (
               <Output built={x.built} showWs={showWs} />
             ) : (
               <pre className="rendered">
