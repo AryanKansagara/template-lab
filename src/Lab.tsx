@@ -381,14 +381,14 @@ export default function Lab() {
   const addMsg = (role: Role) => set({ msgs: [...state.msgs, { role, content: '', ...(role === 'tool' ? { toolCallId: '' } : {}) }] })
 
   function addKwarg(k: string) {
-    let obj: Record<string, unknown> = {}
-    try {
-      obj = JSON.parse(state.kwargs || '{}')
-    } catch {
-      /* replace broken JSON */
-    }
-    if (!(k in obj)) obj[k] = k.startsWith('enable_') || k.endsWith('_mode') ? false : k === 'date_string' ? new Date().toDateString().slice(4) : ''
-    set({ kwargs: JSON.stringify(obj, null, 2) })
+    const text = state.kwargs.trim() || '{}'
+    const obj = parseJson('Extra kwargs', text, [])
+    if (!isObject(obj)) return flash('Fix the extra kwargs first: they must be a JSON object.')
+    if (Object.hasOwn(obj, k)) return flash(`The extra kwargs already set ${k}.`)
+    const value = k.startsWith('enable_') || k.endsWith('_mode') ? false : k === 'date_string' ? new Date().toDateString().slice(4) : ''
+    // Added to the text as typed: writing the parsed object back would change numbers such as 1.0.
+    const body = text.slice(0, -1).trimEnd()
+    set({ kwargs: `${body}${body === '{' ? '' : ','}\n  ${JSON.stringify(k)}: ${JSON.stringify(value)}\n}` })
   }
 
   return (
