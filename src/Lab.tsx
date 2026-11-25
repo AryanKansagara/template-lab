@@ -55,6 +55,24 @@ function sanitize(raw: unknown): Partial<LabState> {
   return out
 }
 
+/** False when sanitize() had to drop a message or part of one: the rest would look like a complete conversation. */
+function messagesIntact(raw: unknown, read: Partial<LabState>) {
+  const { msgs } = raw as { msgs?: unknown }
+  if (msgs === undefined) return true
+  if (!Array.isArray(msgs) || msgs.length !== read.msgs?.length) return false
+  return msgs.every((m) => [m.toolCalls, m.toolCallId].every((v) => v === undefined || typeof v === 'string'))
+}
+
+/** "sample|model" from a #try= link; empty when the escapes are malformed. */
+function parsePreset(text: string) {
+  try {
+    const [, id, model] = decodeURIComponent(text).match(/^([\w-]+)\|(.+)$/) ?? []
+    return { sample: SAMPLES.find((x) => x.id === id), model }
+  } catch {
+    return {}
+  }
+}
+
 const STORE = 'tl:state'
 const PASTE_TOKENIZER = 'Qwen/Qwen2.5-7B-Instruct'
 
@@ -167,22 +185,24 @@ export default function Lab() {
   // Shared link wins over saved state.
   useEffect(() => {
     const applyHash = () => {
-    const preset = location.hash.match(/^#try=([\w-]+)\|(.+)$/)
+    const preset = location.hash.match(/^#try=(.*)$/)
     if (preset) {
-      const sample = SAMPLES.find((x) => x.id === preset[1])
-      const model = decodeURIComponent(preset[2])
-      if (sample) {
+      const { sample, model } = parsePreset(preset[1])
+      if (sample && model) {
         set({ msgs: sample.msgs, agp: sample.agp, toolsOn: !!sample.tools, tools: sample.tools ?? WEATHER_TOOLS, kwargs: sample.kwargs ?? '{}' })
         loadModel(model)
-      }
+      } else flash('That link’s sample or model can’t be read.')
       history.replaceState(null, '', location.pathname)
       return
     }
     const m = location.hash.match(/^#s=(.+)$/)
     if (!m) return
     decodeState<Partial<LabState>>(m[1]).then((s) => {
-      if (!s) return flash('That share link is broken or truncated.')
-      const next = { ...DEFAULT, ...sanitize(s) }
+      const read = sanitize(s)
+      // Anything that is not a setup (a number, a list, no known field) must not replace the saved work.
+      if (!Object.keys(read).length) return flash('That share link is broken or truncated.')
+      if (!messagesIntact(s, read)) return flash('That share link has messages this lab can’t read, so it was not opened.')
+      const next = { ...DEFAULT, ...read }
       setState(next)
       setDraft(next.model)
       setCompareDraft(next.compare)
