@@ -119,7 +119,16 @@ interface Built {
   issues: Issue[]
 }
 
-function build(template: string | null, specials: SpecialTokens, specialList: string[], base: Parameters<typeof lint>[0]['input'], addsBos: boolean | null): Built {
+function build(template: string | null, specials: SpecialTokens, specialList: string[], base: Parameters<typeof lint>[0]['input'], addsBos: boolean | null, unreadable: string[]): Built {
+  // A prompt rendered without the part that can't be read would look right and be wrong.
+  if (unreadable.length)
+    return {
+      template,
+      specials,
+      specialList,
+      result: { ok: false, error: { kind: 'input', message: unreadable.join('; ') } },
+      issues: unreadable.map((detail, i) => ({ id: `input-${i}`, severity: 'error', title: 'Input can’t be read', detail: `${detail}. Nothing is rendered or checked until it is fixed.` })),
+    }
   const input = { ...base, specials }
   return {
     template,
@@ -209,6 +218,8 @@ export default function Lab() {
     const kwargs = parseJson('Extra kwargs', deferred.kwargs, errs)
     const tools = deferred.toolsOn ? parseJson('Tools', deferred.tools, errs) : undefined
     if (tools !== undefined && !Array.isArray(tools)) errs.push('Tools must be a JSON array')
+    // transformers: "Tools should either be a JSON schema, or a callable function".
+    if (Array.isArray(tools)) tools.forEach((t, i) => (!t || typeof t !== 'object' || Array.isArray(t)) && errs.push(`Tools: item #${i + 1} must be a JSON object`))
     if (kwargs !== undefined && (typeof kwargs !== 'object' || Array.isArray(kwargs) || kwargs === null)) errs.push('Extra kwargs must be a JSON object')
     return {
       errs,
@@ -229,14 +240,14 @@ export default function Lab() {
     const specials = modelA && mode === 'hub' ? modelA.specials : pasteSpecials
     const list = modelA && mode === 'hub' ? modelA.specialTokens : Object.values(pasteSpecials).filter(Boolean) as string[]
     const adds = tokA.status === 'ready' ? tokenizerAddsBos(tokA.tok, specials.bos_token) : mode === 'hub' ? (modelA?.addBosToken ?? null) : null
-    return build(mode === 'paste' ? deferred.override ?? '' : template, specials, list, input, adds)
+    return build(mode === 'paste' ? deferred.override ?? '' : template, specials, list, input, adds, input.errs)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, modelA, hubTemplate, deferred.override, deferred.pasteBos, deferred.pasteEos, input, tokA])
 
   const B = useMemo<Built | null>(() => {
     if (!modelB) return null
     const adds = tokB.status === 'ready' ? tokenizerAddsBos(tokB.tok, modelB.specials.bos_token) : modelB.addBosToken
-    return build(modelB.templates[0]?.template ?? null, modelB.specials, modelB.specialTokens, input, adds)
+    return build(modelB.templates[0]?.template ?? null, modelB.specials, modelB.specialTokens, input, adds, input.errs)
   }, [modelB, input, tokB])
 
   const tokensA = useMemo(() => (A?.result.ok ? tokenize(tokA, A.result.text) : null), [A, tokA])
@@ -633,9 +644,9 @@ function Output({ built, showWs }: { built: Built; showWs: boolean }) {
   if (!r.ok)
     return (
       <div className={`render-error kind-${r.error.kind}`} role="alert">
-        <span className="badge">{r.error.kind === 'raise' ? 'raise_exception' : r.error.kind === 'parse' ? 'syntax error' : 'runtime error'}</span>
+        <span className="badge">{r.error.kind === 'input' ? 'unreadable input' : r.error.kind === 'raise' ? 'raise_exception' : r.error.kind === 'parse' ? 'syntax error' : 'runtime error'}</span>
         <p className="mono">{r.error.message}</p>
-        <p className="muted small">{r.error.kind === 'raise' ? 'The template itself rejected this conversation. transformers would throw TemplateError here too.' : 'This is what apply_chat_template() would fail with.'}</p>
+        <p className="muted small">{r.error.kind === 'input' ? 'Fix the JSON on the left to render the prompt.' : r.error.kind === 'raise' ? 'The template itself rejected this conversation. transformers would throw TemplateError here too.' : 'This is what apply_chat_template() would fail with.'}</p>
       </div>
     )
   if (!r.text) return <p className="muted small">The template rendered an empty string.</p>
@@ -699,7 +710,7 @@ function Compare({ a, b, nameA, nameB, tokA, tokB, showWs, tokenizeOn, onTokeniz
           {delta !== null ? (
             <><b className={delta > 0 ? 'up' : delta < 0 ? 'down' : ''}>{delta > 0 ? '+' : ''}{delta}</b><span className="muted small">tokens for B ({tokA ? ((delta / tokA) * 100).toFixed(0) : 0}%)</span></>
           ) : ta === null || tb === null ? (
-            <span className="muted small">No delta: a template raised</span>
+            <span className="muted small">{a.result.ok || a.result.error.kind !== 'input' ? 'No delta: a template raised' : 'No delta: the input can’t be read'}</span>
           ) : (
             <button className="btn btn-sm" onClick={onTokenize} disabled={tokenizeOn}>{tokenizeOn ? 'Tokenizing…' : 'Exact token counts'}</button>
           )}
