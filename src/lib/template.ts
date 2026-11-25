@@ -27,7 +27,8 @@ export interface RenderInput {
   specials?: SpecialTokens
 }
 
-export type RenderError = { kind: 'parse' | 'raise' | 'runtime'; message: string }
+/** `input` = the tools, kwargs or tool_calls JSON could not be read, so nothing was rendered. */
+export type RenderError = { kind: 'parse' | 'raise' | 'runtime' | 'input'; message: string }
 export type RenderResult = { ok: true; text: string } | { ok: false; error: RenderError }
 
 /** What transformers < 4.43 silently used when a repo had no chat_template. */
@@ -35,8 +36,6 @@ export const CHATML_FALLBACK =
   "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 
 class RaiseError extends Error {}
-
-const STRING_FILTER = /(?<![\w.])([A-Za-z_][\w.]*(?:\[[^\]]*\])*)\s*\|\s*string\b/g
 
 const pyQuote = (s: string) => {
   const q = s.includes("'") && !s.includes('"') ? '"' : "'"
@@ -59,7 +58,34 @@ export function pyRepr(v: unknown): string {
   return String(v)
 }
 
-const pyStr = (v: unknown) => (typeof v === 'string' ? v : pyRepr(v))
+/** Python str() of a one-item list: inside a list the engine keeps the runtime type (1.0, undefined), which it strips from plain arguments. */
+const pyStr = ([v]: { type: string; value: unknown }[]) => (v.type === 'UndefinedValue' ? '' : v.type === 'StringValue' ? v.value : pyRepr(v))
+
+type Node = { type?: string; value?: unknown; callee?: Node; filter?: Node; operand?: Node; args?: unknown[]; [k: string]: unknown }
+
+/**
+ * Route `x | string` and `raise_exception(...)` to our own functions, on the parsed template so that plain text,
+ * literals and comments that merely look like them are left alone.
+ */
+function hook(x: unknown): void {
+  if (Array.isArray(x)) return x.forEach(hook)
+  if (x instanceof Map) return x.forEach((v, k) => (hook(k), hook(v)))
+  if (!x || typeof x !== 'object') return
+  const n = x as Node
+  Object.values(n).forEach(hook)
+  if (n.type === 'CallExpression' && n.callee?.type === 'Identifier' && n.callee.value === 'raise_exception') n.callee.value = '__tl_raise'
+  // `x | string` becomes __tl_str(x). The filter takes no arguments.
+  if (n.type === 'FilterExpression') {
+    const f = n.filter!
+    const name = f.type === 'CallExpression' ? f.callee : f
+    if (name?.type === 'Identifier' && name.value === 'string' && !f.args?.length) {
+      const operand = n.operand
+      delete n.operand
+      delete n.filter
+      Object.assign(n, { type: 'CallExpression', callee: { type: 'Identifier', value: '__tl_str' }, args: [{ type: 'ArrayLiteral', value: [operand] }] })
+    }
+  }
+}
 
 const compiled = new Map<string, Template | RenderError>()
 
@@ -67,9 +93,10 @@ function compile(src: string): Template | RenderError {
   let t = compiled.get(src)
   if (!t) {
     try {
-      // Route raise_exception to our own function so we can tell it apart from crashes (the builtin can't be overridden).
-      // `x | string` on a dict or list is Python's repr in transformers; @huggingface/jinja can't do it for objects.
-      t = new Template(src.replace(/\braise_exception\s*\(/g, '__tl_raise(').replace(STRING_FILTER, '__tl_str($1)'))
+      // raise_exception is hooked to tell it apart from crashes (the builtin can't be overridden);
+      // `x | string` because it is Python's repr in transformers, which @huggingface/jinja can't do for objects.
+      t = new Template(src)
+      hook(t.parsed)
     } catch (e) {
       t = { kind: 'parse', message: (e as Error).message }
     }
@@ -233,6 +260,10 @@ export function lint(ctx: LintContext): Issue[] {
   }
 
   // --- tools
+  // A name in the prompt proves nothing by itself: it may come from a message, a schema or another call.
+  // So the tool or call is renamed (`r`), and the prompt must follow. Templates that special-case or refuse
+  // the new name still count when the render changed and the real name is there.
+  const shown = (name: string, r: RenderResult) => (r.ok && r.text.includes(PROBE)) || ((!r.ok || r.text !== text) && text.includes(name))
   const tools = base.tools ?? []
   if (tools.length) {
     const without = run({ tools: null })
@@ -240,15 +271,26 @@ export function lint(ctx: LintContext): Issue[] {
     if (without.ok && without.text === text) {
       add('warn', 'tools-ignored', 'Tools are ignored by this template', `Passing tools=[…] changes nothing: the model never sees ${names.map((n) => '`' + n + '`').join(', ') || 'the schemas'}. Use a tool-aware template (some repos ship a named "tool_use" template) or inject schemas into the system prompt yourself.`)
     } else {
-      const missing = names.filter((n) => !text.includes(n))
+      const missing = tools.flatMap((t, i) => {
+        const name = toolName(t)
+        if (!name) return [`tool #${i + 1} (has no name, so it can't be checked)`]
+        const r = run({ tools: tools.map((x, j) => (j === i ? renamed(x) : x)) })
+        return shown(name, r) ? [] : [name]
+      })
       if (missing.length) add('warn', 'tools-partial', 'Some tools are missing from the prompt', `Not rendered: ${missing.join(', ')}.`)
       else add('ok', 'tools', `Tools rendered (${tools.length})`, 'All tool schemas appear in the prompt.')
     }
   }
   msgs.forEach((m, i) => {
     if (m.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) return
-    const names = m.tool_calls.map(toolName).filter(Boolean) as string[]
-    if (names.some((n) => !text.includes(n))) {
+    const calls = m.tool_calls
+    const dropped = calls.some((c, k) => {
+      const name = toolName(c)
+      if (!name) return false
+      const r = run({ messages: msgs.map((x, j) => (j === i ? { ...x, tool_calls: calls.map((y, l) => (l === k ? renamed(y) : y)) } : x)) })
+      return !shown(name, r)
+    })
+    if (dropped) {
       add('warn', `calls-${i}`, `tool_calls in message #${i + 1} are dropped`, 'The assistant’s tool calls never appear in the prompt, so the model can’t see what it called before reading the results.')
     }
   })
@@ -274,6 +316,15 @@ function sortIssues(issues: Issue[]) {
 function toolName(t: unknown): string | undefined {
   const o = t as { name?: string; function?: { name?: string } }
   return o?.function?.name ?? o?.name
+}
+
+/** A name no conversation contains, in characters every template and JSON writer passes through. */
+const PROBE = 'tl0_renamed_probe'
+
+/** A copy of a tool or tool call under the probe name. */
+function renamed(t: unknown): unknown {
+  const o = t as { name?: string; function?: { name?: string } }
+  return o.function?.name !== undefined ? { ...o, function: { ...o.function, name: PROBE } } : { ...o, name: PROBE }
 }
 
 export function firstDiff(a: string, b: string) {

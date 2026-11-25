@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
-import { DEFAULT_MODELS, fetchModelTemplate, HubError, type ModelTemplate } from './lib/hub.ts'
+import { DEFAULT_MODELS, fetchModelTemplate, HubError, parseModelRef, refLabel, type ModelTemplate } from './lib/hub.ts'
 import { CHATML_FALLBACK, diff, diffUnits, lint, render, templateKwargs, type ChatMessage, type Issue, type RenderResult, type Role, type SpecialTokens } from './lib/template.ts'
 import { decodeState, encodeState } from './lib/share.ts'
 import { SAMPLES, WEATHER_TOOLS, type UIMsg } from './samples.ts'
@@ -53,6 +53,24 @@ function sanitize(raw: unknown): Partial<LabState> {
       .map((m) => ({ role: m.role, content: m.content, ...(typeof m.toolCalls === 'string' ? { toolCalls: m.toolCalls } : {}), ...(typeof m.toolCallId === 'string' ? { toolCallId: m.toolCallId } : {}) }))
   }
   return out
+}
+
+/** False when sanitize() had to drop a message or part of one: the rest would look like a complete conversation. */
+function messagesIntact(raw: unknown, read: Partial<LabState>) {
+  const { msgs } = raw as { msgs?: unknown }
+  if (msgs === undefined) return true
+  if (!Array.isArray(msgs) || msgs.length !== read.msgs?.length) return false
+  return msgs.every((m) => [m.toolCalls, m.toolCallId].every((v) => v === undefined || typeof v === 'string'))
+}
+
+/** "sample|model" from a #try= link; empty when the escapes are malformed. */
+function parsePreset(text: string) {
+  try {
+    const [, id, model] = decodeURIComponent(text).match(/^([\w-]+)\|(.+)$/) ?? []
+    return { sample: SAMPLES.find((x) => x.id === id), model }
+  } catch {
+    return {}
+  }
 }
 
 const STORE = 'tl:state'
@@ -119,7 +137,16 @@ interface Built {
   issues: Issue[]
 }
 
-function build(template: string | null, specials: SpecialTokens, specialList: string[], base: Parameters<typeof lint>[0]['input'], addsBos: boolean | null): Built {
+function build(template: string | null, specials: SpecialTokens, specialList: string[], base: Parameters<typeof lint>[0]['input'], addsBos: boolean | null, unreadable: string[]): Built {
+  // A prompt rendered without the part that can't be read would look right and be wrong.
+  if (unreadable.length)
+    return {
+      template,
+      specials,
+      specialList,
+      result: { ok: false, error: { kind: 'input', message: unreadable.join('; ') } },
+      issues: unreadable.map((detail, i) => ({ id: `input-${i}`, severity: 'error', title: 'Input can’t be read', detail: `${detail}. Nothing is rendered or checked until it is fixed.` })),
+    }
   const input = { ...base, specials }
   return {
     template,
@@ -158,22 +185,24 @@ export default function Lab() {
   // Shared link wins over saved state.
   useEffect(() => {
     const applyHash = () => {
-    const preset = location.hash.match(/^#try=([\w-]+)\|(.+)$/)
+    const preset = location.hash.match(/^#try=(.*)$/)
     if (preset) {
-      const sample = SAMPLES.find((x) => x.id === preset[1])
-      const model = decodeURIComponent(preset[2])
-      if (sample) {
+      const { sample, model } = parsePreset(preset[1])
+      if (sample && model) {
         set({ msgs: sample.msgs, agp: sample.agp, toolsOn: !!sample.tools, tools: sample.tools ?? WEATHER_TOOLS, kwargs: sample.kwargs ?? '{}' })
         loadModel(model)
-      }
+      } else flash('That link’s sample or model can’t be read.')
       history.replaceState(null, '', location.pathname)
       return
     }
     const m = location.hash.match(/^#s=(.+)$/)
     if (!m) return
     decodeState<Partial<LabState>>(m[1]).then((s) => {
-      if (!s) return flash('That share link is broken or truncated.')
-      const next = { ...DEFAULT, ...sanitize(s) }
+      const read = sanitize(s)
+      // Anything that is not a setup (a number, a list, no known field) must not replace the saved work.
+      if (!Object.keys(read).length) return flash('That share link is broken or truncated.')
+      if (!messagesIntact(s, read)) return flash('That share link has messages this lab can’t read, so it was not opened.')
+      const next = { ...DEFAULT, ...read }
       setState(next)
       setDraft(next.model)
       setCompareDraft(next.compare)
@@ -186,7 +215,16 @@ export default function Lab() {
     return () => removeEventListener('hashchange', applyHash)
   }, [])
 
-  useEffect(() => localStorage.setItem(STORE, JSON.stringify(state)), [state])
+  const [unsaved, setUnsaved] = useState(false)
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORE, JSON.stringify(state))
+      setUnsaved(false)
+    } catch {
+      // Over quota, or storage is blocked: the lab still works, it just can't be remembered.
+      setUnsaved(true)
+    }
+  }, [state])
 
   function flash(msg: string) {
     setToast(msg)
@@ -199,6 +237,10 @@ export default function Lab() {
   const modelB = hubB.status === 'ready' ? hubB.model : null
 
   const tokIdA = state.model || PASTE_TOKENIZER
+  const label = (raw: string) => {
+    const ref = parseModelRef(raw)
+    return ref ? refLabel(ref) : raw
+  }
   const tokA = useTokenizer(tokIdA, state.tokenize)
   const tokB = useTokenizer(modelB ? state.compare : null, state.tokenize && tab === 'compare')
 
@@ -209,6 +251,8 @@ export default function Lab() {
     const kwargs = parseJson('Extra kwargs', deferred.kwargs, errs)
     const tools = deferred.toolsOn ? parseJson('Tools', deferred.tools, errs) : undefined
     if (tools !== undefined && !Array.isArray(tools)) errs.push('Tools must be a JSON array')
+    // transformers: "Tools should either be a JSON schema, or a callable function".
+    if (Array.isArray(tools)) tools.forEach((t, i) => (!t || typeof t !== 'object' || Array.isArray(t)) && errs.push(`Tools: item #${i + 1} must be a JSON object`))
     if (kwargs !== undefined && (typeof kwargs !== 'object' || Array.isArray(kwargs) || kwargs === null)) errs.push('Extra kwargs must be a JSON object')
     return {
       errs,
@@ -229,14 +273,14 @@ export default function Lab() {
     const specials = modelA && mode === 'hub' ? modelA.specials : pasteSpecials
     const list = modelA && mode === 'hub' ? modelA.specialTokens : Object.values(pasteSpecials).filter(Boolean) as string[]
     const adds = tokA.status === 'ready' ? tokenizerAddsBos(tokA.tok, specials.bos_token) : mode === 'hub' ? (modelA?.addBosToken ?? null) : null
-    return build(mode === 'paste' ? deferred.override ?? '' : template, specials, list, input, adds)
+    return build(mode === 'paste' ? deferred.override ?? '' : template, specials, list, input, adds, input.errs)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, modelA, hubTemplate, deferred.override, deferred.pasteBos, deferred.pasteEos, input, tokA])
 
   const B = useMemo<Built | null>(() => {
     if (!modelB) return null
     const adds = tokB.status === 'ready' ? tokenizerAddsBos(tokB.tok, modelB.specials.bos_token) : modelB.addBosToken
-    return build(modelB.templates[0]?.template ?? null, modelB.specials, modelB.specialTokens, input, adds)
+    return build(modelB.templates[0]?.template ?? null, modelB.specials, modelB.specialTokens, input, adds, input.errs)
   }, [modelB, input, tokB])
 
   const tokensA = useMemo(() => (A?.result.ok ? tokenize(tokA, A.result.text) : null), [A, tokA])
@@ -294,6 +338,11 @@ export default function Lab() {
 
   return (
     <div className="lab">
+      {unsaved && (
+        <p className="input-errors unsaved" role="alert">
+          This browser can’t save your setup (its storage is full or blocked). Everything still works, but a reload will lose your latest changes.
+        </p>
+      )}
       {/* ------------------------------------------------ source bar */}
       <section className="card source" aria-label="Template source">
         <div className="source-top">
@@ -505,7 +554,7 @@ export default function Lab() {
 
             {tab === 'tokens' && (
               <div className="pane">
-                <TokenizerBar tok={tokA} id={tokIdA} on={state.tokenize} onToggle={(v) => set({ tokenize: v })} paste={mode === 'paste'} />
+                <TokenizerBar tok={tokA} id={label(tokIdA)} on={state.tokenize} onToggle={(v) => set({ tokenize: v })} paste={mode === 'paste'} />
                 {tokensA && A && (
                   <>
                     <div className="pane-bar">
@@ -542,7 +591,7 @@ export default function Lab() {
                 {hubB.status === 'error' && <HubErrorCard error={hubB.error} onPick={(id) => { setCompareDraft(id); set({ compare: id }) }} />}
                 {hubB.status === 'loading' && <div className="skeleton" />}
                 {state.tokenize && [tokA, tokB].map((t, i) => t.status === 'error' && <p key={i} className="err-text small">{t.message}</p>)}
-                {A && B && <Compare a={A} b={B} nameA={state.model || 'Pasted template'} nameB={state.compare} tokA={tokensA?.ids.length} tokB={tokensB?.ids.length} showWs={showWs} tokenizeOn={state.tokenize} onTokenize={() => set({ tokenize: true })} />}
+                {A && B && <Compare a={A} b={B} nameA={state.model ? label(state.model) : 'Pasted template'} nameB={label(state.compare)} tokA={tokensA?.ids.length} tokB={tokensB?.ids.length} showWs={showWs} tokenizeOn={state.tokenize} onTokenize={() => set({ tokenize: true })} />}
               </div>
             )}
 
@@ -583,7 +632,8 @@ function ModelMeta({ hub, onPick, override, onReset, tplName, onTpl }: { hub: Hu
   const m = hub.model
   return (
     <div className="meta">
-      <a className="meta-id mono" href={`https://huggingface.co/${m.id}`} target="_blank" rel="noreferrer">{m.id}</a>
+      <a className="meta-id mono" href={`https://huggingface.co/${m.id}${m.revision === 'main' ? '' : `/tree/${encodeURIComponent(m.revision)}`}`} target="_blank" rel="noreferrer">{m.id}</a>
+      {m.revision !== 'main' && <span className="tag mono">revision {m.revision}</span>}
       <span className={`tag ${m.source === 'none' ? 'tag-bad' : ''}`}>{m.source === 'none' ? 'no chat_template' : m.source}</span>
       {m.templates.length > 1 && (
         <label className="select-wrap sm">
@@ -633,9 +683,9 @@ function Output({ built, showWs }: { built: Built; showWs: boolean }) {
   if (!r.ok)
     return (
       <div className={`render-error kind-${r.error.kind}`} role="alert">
-        <span className="badge">{r.error.kind === 'raise' ? 'raise_exception' : r.error.kind === 'parse' ? 'syntax error' : 'runtime error'}</span>
+        <span className="badge">{r.error.kind === 'input' ? 'unreadable input' : r.error.kind === 'raise' ? 'raise_exception' : r.error.kind === 'parse' ? 'syntax error' : 'runtime error'}</span>
         <p className="mono">{r.error.message}</p>
-        <p className="muted small">{r.error.kind === 'raise' ? 'The template itself rejected this conversation. transformers would throw TemplateError here too.' : 'This is what apply_chat_template() would fail with.'}</p>
+        <p className="muted small">{r.error.kind === 'input' ? 'Fix the JSON on the left to render the prompt.' : r.error.kind === 'raise' ? 'The template itself rejected this conversation. transformers would throw TemplateError here too.' : 'This is what apply_chat_template() would fail with.'}</p>
       </div>
     )
   if (!r.text) return <p className="muted small">The template rendered an empty string.</p>
@@ -699,7 +749,7 @@ function Compare({ a, b, nameA, nameB, tokA, tokB, showWs, tokenizeOn, onTokeniz
           {delta !== null ? (
             <><b className={delta > 0 ? 'up' : delta < 0 ? 'down' : ''}>{delta > 0 ? '+' : ''}{delta}</b><span className="muted small">tokens for B ({tokA ? ((delta / tokA) * 100).toFixed(0) : 0}%)</span></>
           ) : ta === null || tb === null ? (
-            <span className="muted small">No delta: a template raised</span>
+            <span className="muted small">{a.result.ok || a.result.error.kind !== 'input' ? 'No delta: a template raised' : 'No delta: the input can’t be read'}</span>
           ) : (
             <button className="btn btn-sm" onClick={onTokenize} disabled={tokenizeOn}>{tokenizeOn ? 'Tokenizing…' : 'Exact token counts'}</button>
           )}

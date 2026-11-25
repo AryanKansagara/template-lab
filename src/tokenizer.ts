@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { parseModelRef } from './lib/hub.ts'
 
 /** Minimal surface we use from transformers.js' PreTrainedTokenizer. */
 export interface Tok {
@@ -8,16 +9,18 @@ export interface Tok {
 
 const cache = new Map<string, Promise<Tok>>()
 
-export function loadTokenizer(id: string): Promise<Tok> {
-  let p = cache.get(id)
+/** `raw` is whatever was loaded: an id or a Hub URL, whose revision the tokenizer comes from too. */
+export function loadTokenizer(raw: string): Promise<Tok> {
+  let p = cache.get(raw)
   if (!p) {
     p = import('@huggingface/transformers').then(async ({ AutoTokenizer, env }) => {
       // SPA rewrites would answer /models/... with index.html; only ever hit the Hub.
       env.allowLocalModels = false
-      return (await AutoTokenizer.from_pretrained(id)) as unknown as Tok
+      const { id, revision } = parseModelRef(raw) ?? { id: raw, revision: 'main' }
+      return (await AutoTokenizer.from_pretrained(id, { revision })) as unknown as Tok
     })
-    p.catch(() => cache.delete(id))
-    cache.set(id, p)
+    p.catch(() => cache.delete(raw))
+    cache.set(raw, p)
   }
   return p
 }
