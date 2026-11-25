@@ -11,7 +11,7 @@ test('#2 "| string" in plain text and literals is left alone', async ({ page }) 
   await expect.poll(() => prompt(page)).toBe('Return: number | string. union: number | string')
 })
 
-test.fail('#3 a dropped tool call is reported although the schema names the tool', async ({ page }) => {
+test('#3 a dropped tool call is reported although the schema names the tool', async ({ page }) => {
   await openLab(page)
   await page.getByLabel('Load a sample conversation').selectOption({ label: 'Tool-call round trip' })
   await paste(page, '{% if tools %}{{ tools | tojson }}{% endif %}' + CHAT)

@@ -212,3 +212,36 @@ test('`| string` and raise_exception are only hooked where they are code', () =>
   assert.equal(r("{% if x is string %}s{% endif %}", { x: 'a' }), 's')
   assert.equal(r("{{ raise_exception('no ' + x) }}", { x: 'way' }), 'raise: no way')
 })
+
+test('a tool or call counts as rendered only when the prompt follows its name', () => {
+  const CHAT = '{% for m in messages %}<|{{ m.role }}|>{{ m.content }}<|end|>{% endfor %}{% if add_generation_prompt %}<|assistant|>{% endif %}'
+  const call = (name: string) => ({ id: 'abc123xyz', type: 'function', function: { name, arguments: { city: 'Paris' } } })
+  const trip = (...calls: unknown[]): ChatMessage[] => [
+    { role: 'user', content: 'use get_weather' },
+    { role: 'assistant', content: '', tool_calls: calls },
+    { role: 'tool', content: '21', tool_call_id: 'abc123xyz' },
+  ]
+  const on = (template: string, messages: ChatMessage[], tools: unknown[] = weather) => ids(lint({ template, input: { messages, tools, addGenerationPrompt: true }, tokenizerAddsBos: false }))
+
+  // Schema rendered, call dropped.
+  const schemaOnly = on('{{ tools | tojson }}' + CHAT, trip(call('get_weather')))
+  assert.ok(schemaOnly.includes('tools') && schemaOnly.includes('calls-1'))
+  // Tools change the prompt, but the schema is only "there" because the user wrote the name.
+  const nameOnly = on('{% if tools %}You have tools.{% endif %}' + CHAT, [{ role: 'user', content: 'use get_weather' }])
+  assert.ok(nameOnly.includes('tools-partial') && !nameOnly.includes('tools'))
+  // Only the first of two calls with the same name is rendered.
+  assert.ok(on('{% for m in messages %}{% if m.tool_calls %}{{ m.tool_calls[0].function.name }}{% endif %}{{ m.content }}{% endfor %}', trip(call('f'), call('f')), []).includes('calls-1'))
+  // Only the first of two tools with the same name is rendered; a nameless tool is never called rendered.
+  assert.ok(on('{% if tools %}{{ tools[0] | tojson }}{% endif %}' + CHAT, trip(call('x')), [...weather, ...weather]).includes('tools-partial'))
+  assert.ok(on('{{ tools | tojson }}' + CHAT, trip(call('x')), [{}]).includes('tools-partial'))
+  // A template that refuses calls to undeclared tools has read the name.
+  const strict = "{{ tools | tojson }}{% for m in messages %}{% for c in m.tool_calls or [] %}{% if c.function.name != 'get_weather' %}{{ raise_exception('unknown tool') }}{% endif %}{{ c.function.name }}{% endfor %}{{ m.content }}{% endfor %}"
+  assert.ok(!on(strict, trip(call('get_weather'))).includes('calls-1'))
+  for (const name of ['qwen25', 'qwen3', 'llama31', 'mistral03']) {
+    const i = ids(lintFor(name, { messages: trip(call('get_weather')), tools: weather }))
+    assert.ok(i.includes('tools') && !i.includes('calls-1'), `${name}: ${i}`)
+  }
+  // SmolLM3 renders schemas but its template never reads tool_calls.
+  const smol = ids(lintFor('smollm3', { messages: trip(call('get_weather')), tools: weather }))
+  assert.ok(smol.includes('tools') && smol.includes('calls-1'))
+})
