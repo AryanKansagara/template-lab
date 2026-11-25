@@ -118,13 +118,15 @@ export const test = base.extend<{ hub: Hub; external: string[] }>({
 function hubReply(files: Record<string, Route>, path: string): Reply {
   const m = path.match(/^\/([^/]+\/[^/]+)\/resolve\/([^/]+)\/(.+)$/)
   if (!m) return { status: 401, headers: { 'x-error-code': 'RepoNotFound' } }
-  const [, id, rev, file] = m
+  const [, id, , file] = m
+  const rev = decodeURIComponent(m[2])
   const hit = files[rev === 'main' ? `${id}/${file}` : `${id}@${rev}/${file}`]
   if (hit) return typeof hit === 'function' ? hit() : hit
   // A gated repo hides every file.
   const gated = files[`${id}/tokenizer_config.json`] as Reply | undefined
   if (gated?.headers?.['x-error-code'] === 'GatedRepo') return gated
   const known = Object.keys(files).some((k) => k.startsWith(rev === 'main' ? `${id}/` : `${id}@${rev}/`))
+  if (!known && Object.keys(files).some((k) => k.startsWith(`${id}/`))) return { status: 404, headers: { 'x-error-code': 'RevisionNotFound' } }
   return known ? { status: 404, headers: { 'x-error-code': 'EntryNotFound' } } : { status: 401, headers: { 'x-error-code': 'RepoNotFound' } }
 }
 

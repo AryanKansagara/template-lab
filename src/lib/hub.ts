@@ -9,6 +9,8 @@ export interface NamedTemplate {
 
 export interface ModelTemplate {
   id: string
+  /** branch, tag, commit or PR ref the files came from */
+  revision: string
   /** null when the repo ships no chat template at all */
   templates: NamedTemplate[]
   source: 'tokenizer_config.json' | 'chat_template.jinja' | 'chat_template.json' | 'none'
@@ -61,7 +63,32 @@ export const ID_RE = /^[\w.-]+(\/[\w.-]+)?$/
 
 type Fetch = typeof fetch
 
-const resolve = (id: string, file: string) => `${HUB}/${id}/resolve/main/${file}`
+/** A Hub repo at a revision. */
+export interface ModelRef {
+  id: string
+  revision: string
+}
+
+/** Read "org/name" or a huggingface.co URL; /tree/, /blob/ and /resolve/ URLs carry a revision. Null if it is neither. */
+export function parseModelRef(raw: string): ModelRef | null {
+  const url = raw.trim().match(/^https?:\/\/huggingface\.co\/([^?#]*)/)
+  const [, id, rest] = (url ? url[1] : raw.trim()).match(/^(.*?)(?:\/(?:tree|blob|resolve)\/(.*))?$/) ?? []
+  // A revision is one path segment, with slashes escaped, except that PR refs are also linked as refs/pr/1.
+  const segment = rest?.match(/^refs\/(?:pr|convert)\/[^/]+/)?.[0] ?? rest?.split('/')[0]
+  let revision = 'main'
+  try {
+    if (segment) revision = decodeURIComponent(segment)
+  } catch {
+    return null
+  }
+  const clean = id?.replace(/\/$/, '') ?? ''
+  if (!ID_RE.test(clean) || /^\.*$/.test(revision)) return null
+  return { id: clean, revision }
+}
+
+export const refLabel = (r: ModelRef) => (r.revision === 'main' ? r.id : `${r.id}@${r.revision}`)
+
+const resolve = (r: ModelRef, file: string) => `${HUB}/${r.id}/resolve/${encodeURIComponent(r.revision)}/${file}`
 
 const tokenContent = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : v && typeof v === 'object' && typeof (v as { content?: unknown }).content === 'string' ? (v as { content: string }).content : undefined
@@ -84,10 +111,11 @@ async function findMirror(id: string, f: Fetch): Promise<string[]> {
   return []
 }
 
-async function get(id: string, file: string, f: Fetch): Promise<Response | null> {
+async function get(ref: ModelRef, file: string, f: Fetch): Promise<Response | null> {
+  const { id } = ref
   let res: Response
   try {
-    res = await f(resolve(id, file))
+    res = await f(resolve(ref, file))
   } catch {
     throw new HubError('network', `Couldn't reach huggingface.co. Check your connection.`)
   }
@@ -96,6 +124,9 @@ async function get(id: string, file: string, f: Fetch): Promise<Response | null>
     throw new HubError('gated', `${id} is gated. Its files need a logged-in, approved account, so a browser can't fetch them anonymously.`, await findMirror(id, f))
   }
   if (res.status === 404 && res.headers.get('x-error-code') === 'EntryNotFound') return null
+  if (res.headers.get('x-error-code') === 'RevisionNotFound') {
+    throw new HubError('not-found', `${id} has no revision called ${ref.revision}.`)
+  }
   if (res.status === 401 || res.status === 404) {
     throw new HubError('not-found', `No public model called ${id}. Check the spelling, or it may be private.`)
   }
@@ -112,7 +143,7 @@ export function parseTemplates(v: unknown): NamedTemplate[] {
   return []
 }
 
-export function parseConfig(id: string, cfg: Record<string, unknown>): ModelTemplate {
+export function parseConfig(id: string, cfg: Record<string, unknown>, revision = 'main'): ModelTemplate {
   const specials: SpecialTokens = {}
   for (const k of ['bos_token', 'eos_token', 'unk_token', 'pad_token'] as const) {
     const t = tokenContent(cfg[k])
@@ -126,6 +157,7 @@ export function parseConfig(id: string, cfg: Record<string, unknown>): ModelTemp
   const templates = parseTemplates(cfg.chat_template)
   return {
     id,
+    revision,
     templates,
     source: templates.length ? 'tokenizer_config.json' : 'none',
     specials,
@@ -135,11 +167,12 @@ export function parseConfig(id: string, cfg: Record<string, unknown>): ModelTemp
 }
 
 export async function fetchModelTemplate(rawId: string, f: Fetch = fetch): Promise<ModelTemplate> {
-  const id = rawId.trim().replace(/^https?:\/\/huggingface\.co\//, '').replace(/\/(tree|blob|resolve)\/.*$/, '').replace(/\/$/, '')
-  if (!ID_RE.test(id)) throw new HubError('invalid', 'Model ids look like org/name, e.g. Qwen/Qwen2.5-7B-Instruct.')
+  const ref = parseModelRef(rawId)
+  if (!ref) throw new HubError('invalid', 'Model ids look like org/name, e.g. Qwen/Qwen2.5-7B-Instruct.')
+  const { id, revision } = ref
 
   // Like transformers, a standalone chat_template.jinja wins over chat_template in tokenizer_config.json.
-  const [cfgRes, jinja] = await Promise.all([get(id, 'tokenizer_config.json', f), get(id, 'chat_template.jinja', f)])
+  const [cfgRes, jinja] = await Promise.all([get(ref, 'tokenizer_config.json', f), get(ref, 'chat_template.jinja', f)])
   let cfg: Record<string, unknown> = {}
   if (cfgRes) {
     try {
@@ -148,16 +181,16 @@ export async function fetchModelTemplate(rawId: string, f: Fetch = fetch): Promi
       throw new HubError('invalid', 'tokenizer_config.json is not valid JSON.')
     }
   }
-  const model = parseConfig(id, cfg)
+  const model = parseConfig(id, cfg, revision)
   if (jinja) return { ...model, templates: [{ name: 'default', template: await jinja.text() }], source: 'chat_template.jinja' }
   if (model.templates.length) return model
 
   // Multimodal processors keep it in chat_template.json.
-  const json = await get(id, 'chat_template.json', f)
+  const json = await get(ref, 'chat_template.json', f)
   if (json) {
     const templates = parseTemplates((await json.json().catch(() => ({})))?.chat_template)
     if (templates.length) return { ...model, templates, source: 'chat_template.json' }
   }
-  if (!cfgRes) throw new HubError('not-found', `${id} has no tokenizer_config.json or chat template files.`)
+  if (!cfgRes) throw new HubError('not-found', `${refLabel(ref)} has no tokenizer_config.json or chat template files.`)
   return model
 }

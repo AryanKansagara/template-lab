@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
-import { DEFAULT_MODELS, fetchModelTemplate, HubError, type ModelTemplate } from './lib/hub.ts'
+import { DEFAULT_MODELS, fetchModelTemplate, HubError, parseModelRef, refLabel, type ModelTemplate } from './lib/hub.ts'
 import { CHATML_FALLBACK, diff, diffUnits, lint, render, templateKwargs, type ChatMessage, type Issue, type RenderResult, type Role, type SpecialTokens } from './lib/template.ts'
 import { decodeState, encodeState } from './lib/share.ts'
 import { SAMPLES, WEATHER_TOOLS, type UIMsg } from './samples.ts'
@@ -237,6 +237,10 @@ export default function Lab() {
   const modelB = hubB.status === 'ready' ? hubB.model : null
 
   const tokIdA = state.model || PASTE_TOKENIZER
+  const label = (raw: string) => {
+    const ref = parseModelRef(raw)
+    return ref ? refLabel(ref) : raw
+  }
   const tokA = useTokenizer(tokIdA, state.tokenize)
   const tokB = useTokenizer(modelB ? state.compare : null, state.tokenize && tab === 'compare')
 
@@ -550,7 +554,7 @@ export default function Lab() {
 
             {tab === 'tokens' && (
               <div className="pane">
-                <TokenizerBar tok={tokA} id={tokIdA} on={state.tokenize} onToggle={(v) => set({ tokenize: v })} paste={mode === 'paste'} />
+                <TokenizerBar tok={tokA} id={label(tokIdA)} on={state.tokenize} onToggle={(v) => set({ tokenize: v })} paste={mode === 'paste'} />
                 {tokensA && A && (
                   <>
                     <div className="pane-bar">
@@ -587,7 +591,7 @@ export default function Lab() {
                 {hubB.status === 'error' && <HubErrorCard error={hubB.error} onPick={(id) => { setCompareDraft(id); set({ compare: id }) }} />}
                 {hubB.status === 'loading' && <div className="skeleton" />}
                 {state.tokenize && [tokA, tokB].map((t, i) => t.status === 'error' && <p key={i} className="err-text small">{t.message}</p>)}
-                {A && B && <Compare a={A} b={B} nameA={state.model || 'Pasted template'} nameB={state.compare} tokA={tokensA?.ids.length} tokB={tokensB?.ids.length} showWs={showWs} tokenizeOn={state.tokenize} onTokenize={() => set({ tokenize: true })} />}
+                {A && B && <Compare a={A} b={B} nameA={state.model ? label(state.model) : 'Pasted template'} nameB={label(state.compare)} tokA={tokensA?.ids.length} tokB={tokensB?.ids.length} showWs={showWs} tokenizeOn={state.tokenize} onTokenize={() => set({ tokenize: true })} />}
               </div>
             )}
 
@@ -628,7 +632,8 @@ function ModelMeta({ hub, onPick, override, onReset, tplName, onTpl }: { hub: Hu
   const m = hub.model
   return (
     <div className="meta">
-      <a className="meta-id mono" href={`https://huggingface.co/${m.id}`} target="_blank" rel="noreferrer">{m.id}</a>
+      <a className="meta-id mono" href={`https://huggingface.co/${m.id}${m.revision === 'main' ? '' : `/tree/${encodeURIComponent(m.revision)}`}`} target="_blank" rel="noreferrer">{m.id}</a>
+      {m.revision !== 'main' && <span className="tag mono">revision {m.revision}</span>}
       <span className={`tag ${m.source === 'none' ? 'tag-bad' : ''}`}>{m.source === 'none' ? 'no chat_template' : m.source}</span>
       {m.templates.length > 1 && (
         <label className="select-wrap sm">

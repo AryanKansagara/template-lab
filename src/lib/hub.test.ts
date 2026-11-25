@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchModelTemplate, parseConfig, parseTemplates, HubError } from './hub.ts'
+import { fetchModelTemplate, parseModelRef, refLabel, parseConfig, parseTemplates, HubError } from './hub.ts'
 import { encodeState, decodeState } from './share.ts'
 
 const reply = (status: number, body: unknown = '', headers: Record<string, string> = {}) =>
@@ -101,4 +101,30 @@ test('chat_template.jinja takes priority over tokenizer_config, as in transforme
   assert.equal(m.source, 'chat_template.jinja')
   assert.deepEqual(m.templates, [{ name: 'default', template: 'new' }])
   assert.equal(m.specials.eos_token, '</s>')
+})
+
+test('model references: ids, URLs and revisions', () => {
+  const ref = (raw: string) => {
+    const r = parseModelRef(raw)
+    return r && refLabel(r)
+  }
+  for (const raw of ['org/m', ' org/m/ ', 'https://huggingface.co/org/m', 'http://huggingface.co/org/m/', 'https://huggingface.co/org/m?library=transformers', 'https://huggingface.co/org/m#usage', 'https://huggingface.co/org/m/tree/main', 'https://huggingface.co/org/m/blob/main/a/b.json', 'https://huggingface.co/org/m/tree/', 'org/m/tree/main'])
+    assert.equal(ref(raw), 'org/m', raw)
+  assert.equal(ref('gpt2'), 'gpt2')
+  assert.equal(ref('https://huggingface.co/org/m/tree/v1.0'), 'org/m@v1.0')
+  assert.equal(ref('https://huggingface.co/org/m/resolve/3f2a1bc/sub/chat_template.jinja?download=true'), 'org/m@3f2a1bc')
+  assert.equal(ref('https://huggingface.co/org/m/tree/refs%2Fpr%2F3'), 'org/m@refs/pr/3')
+  assert.equal(ref('https://huggingface.co/org/m/blob/refs/pr/3/tokenizer_config.json'), 'org/m@refs/pr/3')
+  for (const raw of ['', 'not a model id', 'a/b/c', 'https://huggingface.co/datasets/org/d', 'https://huggingface.co/org/m/tree/%', 'https://huggingface.co/org/m/tree/..', 'https://example.com/org/m'])
+    assert.equal(ref(raw), null, raw)
+})
+
+test('files are fetched at the revision, and a missing revision is named', async () => {
+  const { f, calls } = fakeFetch({ 'resolve/refs%2Fpr%2F3/chat_template.jinja': reply(200, 'PR') })
+  const m = await fetchModelTemplate('https://huggingface.co/org/m/tree/refs%2Fpr%2F3', f)
+  assert.equal(m.templates[0].template, 'PR')
+  assert.equal(m.revision, 'refs/pr/3')
+  assert.ok(calls.every((u) => u.includes('/org/m/resolve/refs%2Fpr%2F3/')))
+  const gone = fakeFetch({ 'tokenizer_config.json': reply(404, '', { 'x-error-code': 'RevisionNotFound' }) })
+  await assert.rejects(fetchModelTemplate('https://huggingface.co/org/m/tree/v9', gone.f), (e: HubError) => e.kind === 'not-found' && /no revision called v9/.test(e.message))
 })
