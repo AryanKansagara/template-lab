@@ -19,7 +19,7 @@ test('#3 a dropped tool call is reported although the schema names the tool', as
   await expect(issue(page, 'tool_calls in message #3 are dropped')).toBeVisible()
 })
 
-test.fail('#4 unreadable tools JSON gives no prompt and no clean verdict', async ({ page }) => {
+test('#4 unreadable tools JSON gives no prompt and no clean verdict', async ({ page }) => {
   await openLab(page)
   await setSwitch(page, 'tools', true)
   await page.getByLabel('Tools JSON').fill('[{"type":')

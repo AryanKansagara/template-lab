@@ -134,3 +134,40 @@ test('tools, kwargs and tool_calls survive a reload', async ({ page }) => {
   await expect.poll(() => prompt(page)).toBe('2|fast|f1')
   expect((await stored(page))?.model).toBe('')
 })
+
+test('each kind of unreadable input withholds the prompt, tokens and comparison until it is fixed', async ({ page }) => {
+  await openLab(page)
+  await loadModel(page, 'test/tiny')
+  await conversation(page, [{ role: 'user', content: 'hi' }, { role: 'assistant', content: '', toolCalls: '[]' }])
+  await setSwitch(page, 'tools', true)
+  await page.getByLabel('Tools JSON').fill('')
+  await tab(page, 'Tokens')
+  await page.getByRole('button', { name: 'Load tokenizer' }).click()
+  await expect(page.locator('.stat-row')).toBeVisible()
+  const bad = issue(page, 'Input can’t be read')
+  for (const [label, text, message, good] of [
+    ['Tools JSON', '[{"type":', /Tools: /, ''],
+    ['Tools JSON', '{}', /Tools must be a JSON array/, '[]'],
+    ['Tools JSON', '[{"name":"a"}, "x", null, []]', /Tools: item #2 must be a JSON object/, '[{"name":"a"}]'],
+    ['Extra kwargs', '{"a": fal', /Extra kwargs: /, ' '],
+    ['Extra kwargs', 'null', /Extra kwargs must be a JSON object/, '{}'],
+    ['Message 2 tool_calls JSON', '[{"function"', /Message #2 tool_calls: /, '[]'],
+    ['Message 2 tool_calls JSON', '{}', /Message #2 tool_calls must be a JSON array/, ''],
+  ] as const) {
+    await page.getByLabel(label).fill(text)
+    await expect(bad.first()).toContainText(message)
+    await expect(page.locator('.card.lint .sev-ok')).toHaveCount(0)
+    await expect(page.locator('.stat-row')).toHaveCount(0)
+    await page.getByLabel(label).fill(good)
+    await expect(bad).toHaveCount(0)
+    await expect(page.locator('.stat-row')).toBeVisible()
+  }
+  await page.getByLabel('Extra kwargs').fill('{')
+  await tab(page, 'Rendered')
+  await expect(page.locator('.render-error')).toContainText('unreadable input')
+  await tab(page, 'Compare models')
+  await page.getByLabel('Compare with model').fill('test/tiny-long')
+  await page.getByRole('button', { name: 'Compare', exact: true }).click()
+  await expect(page.locator('.cmp-delta')).toContainText('No delta: the input can’t be read')
+  await expect(page.locator('.cmp-grid .rendered')).toHaveCount(0)
+})
