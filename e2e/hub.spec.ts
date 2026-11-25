@@ -36,6 +36,52 @@ test('named templates can be picked', async ({ page }) => {
   await expect.poll(() => prompt(page)).toBe('TOOLS:1')
 })
 
+test('an explicit choice of named template wins over the automatic one and survives a reload', async ({ page }) => {
+  await openLab(page)
+  await loadModel(page, 'test/named')
+  await setSwitch(page, 'tools', true)
+  await expect(page.getByLabel('Named template').locator('option').first()).toHaveText('automatic (tool_use)')
+  await page.getByLabel('Named template').selectOption('default')
+  await expect.poll(() => prompt(page)).toBe('DEFAULT')
+  await page.reload()
+  await expect.poll(() => prompt(page)).toBe('DEFAULT')
+  await page.getByLabel('Named template').selectOption('')
+  await expect.poll(() => prompt(page)).toBe('TOOLS:1')
+})
+
+test('named templates without a default raise as in transformers until one is picked', async ({ page }) => {
+  await openLab(page)
+  await loadModel(page, 'test/no-default')
+  await expect(issue(page, 'No default template')).toContainText("Available template names are ['rag', 'tool_use']")
+  await tab(page, 'Rendered')
+  await expect(page.locator('.render-error')).toContainText('ValueError')
+  await expect(page.getByRole('button', { name: 'Copy', exact: true })).toHaveCount(0)
+  await page.getByLabel('Named template').selectOption('rag')
+  await expect.poll(() => prompt(page)).toBe('RAG')
+  await page.getByLabel('Named template').selectOption('')
+  await setSwitch(page, 'tools', true)
+  await expect.poll(() => prompt(page)).toBe('TOOLS:1')
+})
+
+test('compare picks the named template of model B the same way', async ({ page }) => {
+  await openLab(page)
+  await tab(page, 'Compare models')
+  await page.getByLabel('Compare with model').fill('test/no-default')
+  await page.getByRole('button', { name: 'Compare', exact: true }).click()
+  await expect(page.locator('.cmp-delta')).toHaveText('No delta: a model has no default template')
+  await setSwitch(page, 'tools', true)
+  await expect(page.locator('.cmp-col').nth(1).locator('.rendered')).toHaveText('TOOLS:1')
+  await expect(page.locator('.side-1')).toContainText('test/no-default · tool_use')
+})
+
+test('a saved pick from before the automatic choice is kept', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('tl:state', JSON.stringify({ model: 'test/named', tplName: 'tool_use' })))
+  await openLab(page)
+  await expect(page.getByLabel('Named template')).toHaveValue('tool_use')
+  await tab(page, 'Template')
+  await expect(page.getByLabel('Chat template source')).toHaveValue('TOOLS:{{ tools | length }}')
+})
+
 test('a repo without a template is an error, not a clean prompt', async ({ page }) => {
   await openLab(page)
   await loadModel(page, 'test/base-model')

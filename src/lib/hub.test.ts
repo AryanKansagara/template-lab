@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchModelTemplate, parseModelRef, refLabel, parseConfig, parseTemplates, HubError } from './hub.ts'
+import { chooseTemplate, fetchModelTemplate, parseModelRef, refLabel, parseConfig, parseTemplates, HubError } from './hub.ts'
 import { encodeState, decodeState } from './share.ts'
 
 const reply = (status: number, body: unknown = '', headers: Record<string, string> = {}) =>
@@ -127,4 +127,25 @@ test('files are fetched at the revision, and a missing revision is named', async
   assert.ok(calls.every((u) => u.includes('/org/m/resolve/refs%2Fpr%2F3/')))
   const gone = fakeFetch({ 'tokenizer_config.json': reply(404, '', { 'x-error-code': 'RevisionNotFound' }) })
   await assert.rejects(fetchModelTemplate('https://huggingface.co/org/m/tree/v9', gone.f), (e: HubError) => e.kind === 'not-found' && /no revision called v9/.test(e.message))
+})
+
+test('template choice follows get_chat_template in transformers', () => {
+  const t = (...names: string[]) => parseTemplates(names.map((name) => ({ name, template: name.toUpperCase() })))
+  const pick = (names: string[], hasTools: boolean, name?: string) => {
+    const c = chooseTemplate(t(...names), hasTools, name)
+    return c && (c.name ?? c.error)
+  }
+  assert.equal(pick(['tool_use', 'default'], false), 'default')
+  assert.equal(pick(['default', 'tool_use'], true), 'tool_use')
+  assert.equal(pick(['default', 'rag'], true), 'default')
+  // An explicit pick wins; one the model does not have is no pick.
+  assert.equal(pick(['default', 'tool_use'], true, 'default'), 'default')
+  assert.equal(pick(['rag', 'tool_use'], false, 'rag'), 'rag')
+  assert.equal(pick(['default', 'tool_use'], true, 'gone'), 'tool_use')
+  assert.match(pick(['tool_use', 'rag'], false)!, /no default specified!.*\['rag', 'tool_use'\]/)
+  assert.match(pick(['rag'], true)!, /no default specified/)
+  assert.equal(pick([], true), null)
+  // The list becomes a dict: the last entry of a name wins.
+  const dup = chooseTemplate(parseTemplates([{ name: 'default', template: 'A' }, { name: 'default', template: 'B' }]), false)
+  assert.ok(dup && dup.name !== null && dup.template === 'B')
 })

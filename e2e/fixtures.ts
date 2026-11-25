@@ -60,6 +60,7 @@ const HUB_FILES: Record<string, Route> = {
   'test/processor/tokenizer_config.json': { body: { bos_token: '<s>' } },
   'test/processor/chat_template.json': { body: { chat_template: 'PROC:{{ messages[0].content }}' } },
   'test/named/tokenizer_config.json': { body: { chat_template: [{ name: 'tool_use', template: 'TOOLS:{{ tools | length }}' }, { name: 'default', template: 'DEFAULT' }] } },
+  'test/no-default/tokenizer_config.json': { body: { chat_template: [{ name: 'rag', template: 'RAG' }, { name: 'tool_use', template: 'TOOLS:{{ tools | length }}' }] } },
   'test/base-model/tokenizer_config.json': { body: { bos_token: '<s>' } },
   'test/tiny/tokenizer_config.json': { body: tinyConfig },
   'test/tiny/tokenizer.json': { body: wordTokenizer },
@@ -139,7 +140,7 @@ export const copied = (page: Page) => page.evaluate(() => (window as unknown as 
 export interface Setup {
   model: string
   override: string | null
-  tplName: string
+  tplPick: string
   pasteBos: string
   pasteEos: string
   compare: string
