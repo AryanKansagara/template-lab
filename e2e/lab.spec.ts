@@ -118,8 +118,8 @@ test('invalid JSON is named next to the options', async ({ page }) => {
   await setSwitch(page, 'tools', true)
   await page.getByLabel('Tools JSON').fill('{}')
   await page.getByLabel('Extra kwargs').fill('[1]')
-  await expect(page.getByText('Tools must be a JSON array')).toBeVisible()
-  await expect(page.getByText('Extra kwargs must be a JSON object')).toBeVisible()
+  await expect(page.locator('.input-errors').getByText('Tools must be a JSON array')).toBeVisible()
+  await expect(page.locator('.input-errors').getByText('Extra kwargs must be a JSON object')).toBeVisible()
 })
 
 test('tools, kwargs and tool_calls survive a reload', async ({ page }) => {
