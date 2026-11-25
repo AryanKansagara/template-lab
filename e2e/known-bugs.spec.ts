@@ -5,13 +5,13 @@ import { test, expect, openLab, paste, conversation, prompt, issue, setSwitch, l
 const CHAT = '{% for m in messages %}<|{{ m.role }}|>{{ m.content }}<|end|>{% endfor %}{% if add_generation_prompt %}<|assistant|>{% endif %}'
 const counts = '.card.lint .counts'
 
-test.fail('#2 "| string" in plain text and literals is left alone', async ({ page }) => {
+test('#2 "| string" in plain text and literals is left alone', async ({ page }) => {
   await openLab(page)
   await paste(page, "Return: number | string. {{ 'union: number | string' }}")
   await expect.poll(() => prompt(page)).toBe('Return: number | string. union: number | string')
 })
 
-test.fail('#3 a dropped tool call is reported although the schema names the tool', async ({ page }) => {
+test('#3 a dropped tool call is reported although the schema names the tool', async ({ page }) => {
   await openLab(page)
   await page.getByLabel('Load a sample conversation').selectOption({ label: 'Tool-call round trip' })
   await paste(page, '{% if tools %}{{ tools | tojson }}{% endif %}' + CHAT)

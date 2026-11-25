@@ -8,7 +8,7 @@ const SURVEY: [string, string, string, string][] = [
   ['mistralai/Mistral-7B-Instruct-v0.3', 'tokenizer_config.json', 'double BOS; system prompt moves to the last user turn (prefix mismatch)', 'system prompt dropped when the conversation ends on a tool result'],
   ['mistralai/Mistral-Small-3.1-24B-Instruct-2503', 'chat_template.json', 'double BOS', 'raises: only user, system and assistant roles'],
   ['HuggingFaceTB/SmolLM2-1.7B-Instruct', 'tokenizer_config.json', 'clean', 'tools and tool_calls ignored'],
-  ['HuggingFaceTB/SmolLM3-3B', 'chat_template.jinja', 'clean', 'clean (tools rendered with Python repr)'],
+  ['HuggingFaceTB/SmolLM3-3B', 'chat_template.jinja', 'clean', 'tool_calls dropped (tools rendered with Python repr)'],
   ['microsoft/Phi-3.5-mini-instruct', 'tokenizer_config.json', 'clean', 'tool result dropped, tools ignored'],
   ['microsoft/phi-4', 'tokenizer_config.json', 'clean', 'tool result dropped, tools ignored'],
   ['unsloth/Llama-3.1-8B-Instruct', 'tokenizer_config.json', 'double BOS if you encode the string', 'double BOS if you encode the string'],
