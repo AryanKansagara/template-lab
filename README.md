@@ -31,4 +31,5 @@ npm install
 npm run dev
 npm test
 npm run build
+npm run test:e2e   # Playwright against the production build (npx playwright install chromium once; E2E_PORT picks the port)
 ```
