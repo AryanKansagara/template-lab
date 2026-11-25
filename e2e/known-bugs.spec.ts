@@ -70,7 +70,7 @@ test('#9 a truncated chat_template.json is reported as unreadable', async ({ pag
   await expect(page.locator('.hub-error')).toContainText('chat_template.json is not valid JSON', { timeout: 3000 })
 })
 
-test.fail('#10 a template that writes BOS twice is an error', async ({ page }) => {
+test('#10 a template that writes BOS twice is an error', async ({ page }) => {
   await openLab(page)
   await paste(page, '{{ bos_token }}{{ bos_token }}' + CHAT, '<s>')
   expect((await prompt(page)).startsWith('<s><s>')).toBe(true)
