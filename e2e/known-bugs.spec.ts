@@ -84,7 +84,7 @@ test('#11 a kwarg that only appears in a comment is reported as never read', asy
   await expect(issue(page, 'Kwarg `enable_thinking` is never read')).toBeVisible({ timeout: 3000 })
 })
 
-test.fail('#12 a pasted template survives a visit to the Hub tab', async ({ page }) => {
+test('#12 a pasted template survives a visit to the Hub tab', async ({ page }) => {
   await openLab(page)
   await paste(page, 'MINE')
   await page.getByRole('tab', { name: 'From the Hub' }).click()

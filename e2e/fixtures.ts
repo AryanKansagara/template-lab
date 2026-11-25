@@ -146,6 +146,8 @@ export interface Setup {
   model: string
   override: string | null
   tplPick: string
+  pasted: string | null
+  hubEdit: string | null
   pasteBos: string
   pasteEos: string
   compare: string
