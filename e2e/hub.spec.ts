@@ -107,6 +107,10 @@ for (const [id, title, text] of [
   ['test/empty-config', 'Not a model id', 'tokenizer_config.json is not valid JSON'],
   ['test/truncated-config', 'Not a model id', 'tokenizer_config.json is not valid JSON'],
   ['test/html-config', 'Not a model id', 'tokenizer_config.json is not valid JSON'],
+  ['test/null-config', 'Not a model id', "tokenizer_config.json can't be read: it does not hold a JSON object"],
+  ['test/list-config', 'Not a model id', "tokenizer_config.json can't be read: it does not hold a JSON object"],
+  ['test/null-processor', 'Not a model id', "chat_template.json can't be read: it does not hold a JSON object"],
+  ['test/empty-processor', 'Not a model id', 'chat_template.json is not valid JSON'],
 ]) {
   test(`unusable model "${id}" says why and renders nothing`, async ({ page }) => {
     await openLab(page)

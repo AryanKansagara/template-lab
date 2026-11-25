@@ -149,3 +149,15 @@ test('template choice follows get_chat_template in transformers', () => {
   const dup = chooseTemplate(parseTemplates([{ name: 'default', template: 'A' }, { name: 'default', template: 'B' }]), false)
   assert.ok(dup && dup.name !== null && dup.template === 'B')
 })
+
+test('an unreadable config or chat_template.json is named, never read as "no template"', async () => {
+  const says = (routes: Record<string, Response>, re: RegExp) =>
+    assert.rejects(fetchModelTemplate('org/m', fakeFetch(routes).f), (e: HubError) => e instanceof HubError && e.kind === 'invalid' && re.test(e.message))
+  for (const [body, why] of [['', 'is not valid'], ['{"chat_template": "PROC:{{ mess', 'is not valid'], ['<!doctype html>', 'is not valid'], ['null', 'does not hold'], ['[]', 'does not hold'], ['"x"', 'does not hold'], ['5', 'does not hold']]) {
+    await says({ 'tokenizer_config.json': reply(200, body) }, new RegExp('^tokenizer_config\\.json .*' + why))
+    await says({ 'tokenizer_config.json': reply(200, { bos_token: '<s>' }), 'chat_template.json': reply(200, body) }, new RegExp('^chat_template\\.json .*' + why))
+  }
+  // It is not read when the template is elsewhere.
+  const { f } = fakeFetch({ 'tokenizer_config.json': reply(200, { chat_template: 'T' }), 'chat_template.json': reply(200, '{') })
+  assert.equal((await fetchModelTemplate('org/m', f)).templates[0].template, 'T')
+})

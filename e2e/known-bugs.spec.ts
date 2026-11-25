@@ -64,7 +64,7 @@ test('#8 tool_use is used when tools are on', async ({ page }) => {
   await expect.poll(() => prompt(page), { timeout: 3000 }).toBe('TOOLS:1')
 })
 
-test.fail('#9 a truncated chat_template.json is reported as unreadable', async ({ page }) => {
+test('#9 a truncated chat_template.json is reported as unreadable', async ({ page }) => {
   await openLab(page)
   await loadModel(page, 'test/truncated-processor')
   await expect(page.locator('.hub-error')).toContainText('chat_template.json is not valid JSON', { timeout: 3000 })
