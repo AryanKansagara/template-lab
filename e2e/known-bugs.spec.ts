@@ -116,7 +116,39 @@ test.fail('#15 a refused copy is not reported as copied', async ({ page }) => {
   await expect(page.getByRole('status')).not.toHaveText('Rendered prompt copied', { timeout: 1000 })
 })
 
-// #16 (comparing 20,000 lines freezes the tab) has no test here: pinning it would hang a worker for minutes.
+/** Puts 4,000 lines into the first message at once: fill() types them through the browser's editor, which is slow. */
+const longMessage = (page: import('@playwright/test').Page) =>
+  page.getByLabel('Message 1 content').evaluate((el) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(el, Array.from({ length: 4_000 }, (_, i) => `line ${i}`).join('\n'))
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+
+test('#16 comparing thousands of different lines skips the diff and shows both prompts', async ({ page }) => {
+  await openLab(page)
+  await conversation(page, [{ role: 'user', content: 'placeholder' }])
+  // A template that changes every line.
+  await paste(page, "{{ messages[0].content | replace('line', 'row') }}")
+  await longMessage(page)
+  await page.getByRole('tab', { name: 'Compare models' }).click()
+  await page.getByLabel('Compare with model').fill('test/tiny')
+  await page.getByRole('button', { name: 'Compare', exact: true }).click()
+  await expect(page.locator('.pane')).toContainText('Diff skipped', { timeout: 30_000 })
+  await expect(page.locator('.cmp-col').nth(0).locator('.rendered')).toContainText('row')
+  await expect(page.locator('.cmp-col').nth(1).locator('.rendered')).toContainText('line')
+  await expect(page.locator('.d-add, .d-del')).toHaveCount(0)
+})
+
+test('#16 long prompts that share their start and end are still diffed', async ({ page }) => {
+  await openLab(page)
+  await conversation(page, [{ role: 'user', content: 'placeholder' }])
+  await paste(page, '{{ bos_token }}{{ messages[0].content }}\nonly here', '<s>')
+  await longMessage(page)
+  await page.getByRole('tab', { name: 'Compare models' }).click()
+  await page.getByLabel('Compare with model').fill('test/tiny')
+  await page.getByRole('button', { name: 'Compare', exact: true }).click()
+  await expect(page.locator('.d-del').last()).toContainText('only', { timeout: 30_000 })
+  await expect(page.locator('.pane')).not.toContainText('Diff skipped')
+})
 
 test('#17 the kwarg shortcut does not erase invalid kwargs', async ({ page }) => {
   await openLab(page)

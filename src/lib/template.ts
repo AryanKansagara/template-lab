@@ -602,31 +602,45 @@ export function diffUnits(text: string, specials: string[] = []): string[] {
   const units: string[] = []
   for (const s of segment(text, specials)) {
     if (s.special) units.push(s.text)
-    else units.push(...(s.text.match(/[^\n]*\n|[^\n]+/g) ?? []))
+    else for (const line of s.text.match(/[^\n]*\n|[^\n]+/g) ?? []) units.push(line)
   }
   return units
 }
 
-/** LCS diff of two unit arrays. O(n·m) memory, fine for chat-sized prompts (<~3k units). */
-export function diff(a: string[], b: string[]): DiffOp[] {
-  const n = a.length
-  const m = b.length
-  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1))
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+/** Units each side may have once the shared start and end are cut off: 3,000 × 3,000 cells, about 36 MB. */
+export const MAX_DIFF_UNITS = 3000
+
+/** LCS diff of two unit arrays, whose shared start and end cost nothing. Null when the parts that differ are too long. */
+export function diff(a: string[], b: string[]): DiffOp[] | null {
+  const len = Math.min(a.length, b.length)
+  let start = 0
+  while (start < len && a[start] === b[start]) start++
+  let end = 0
+  while (end < len - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++
+  const n = a.length - end
+  const m = b.length - end
+  const rows = n - start
+  const cols = m - start
+  if (rows * cols > MAX_DIFF_UNITS ** 2) return null
+  // Without rows or columns, all of one side is shared and there is nothing to tabulate.
+  const dp = rows && cols ? Array.from({ length: rows + 1 }, () => new Uint32Array(cols + 1)) : []
+  if (cols) for (let i = rows - 1; i >= 0; i--) for (let j = cols - 1; j >= 0; j--) dp[i][j] = a[start + i] === b[start + j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
   const ops: DiffOp[] = []
   const push = (op: DiffOp['op'], text: string) => {
     const prev = ops[ops.length - 1]
     if (prev?.op === op) prev.text += text
     else ops.push({ op, text })
   }
-  let i = 0
-  let j = 0
+  for (let k = 0; k < start; k++) push('same', a[k])
+  let i = start
+  let j = start
   while (i < n && j < m) {
     if (a[i] === b[j]) push('same', a[i++]), j++
-    else if (dp[i + 1][j] >= dp[i][j + 1]) push('del', a[i++])
+    else if (dp[i + 1 - start][j - start] >= dp[i - start][j + 1 - start]) push('del', a[i++])
     else push('add', b[j++])
   }
   while (i < n) push('del', a[i++])
   while (j < m) push('add', b[j++])
+  for (let k = n; k < a.length; k++) push('same', a[k])
   return ops
 }
