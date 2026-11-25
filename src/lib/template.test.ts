@@ -276,3 +276,24 @@ test('numbers in tools and tool_calls, and text that looks like numbers', () => 
   for (const bad of ['[1.]', '[01]', '{"a": 1.0', '1.0.0', '[NaN]', '']) assert.throws(() => parsePython(bad), SyntaxError, bad)
   for (const ok of ['{"a": [1, 2.5, "x", null, true, {"b": -3}]}', '[]', '"1.0"', '1.5']) assert.deepEqual(parsePython(ok), JSON.parse(ok))
 })
+
+test('a prompt that starts with BOS twice is an error whatever the tokenizer adds', () => {
+  const C = '{% for m in messages %}[{{ m.role }}]{{ m.content }}{% endfor %}'
+  const on = (template: string, adds: boolean | null, bos: string | undefined, messages: ChatMessage[] = [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }]) =>
+    lint({ template, input: { messages, addGenerationPrompt: true, specials: { bos_token: bos } }, tokenizerAddsBos: adds }).filter((i) => /bos/.test(i.id))
+  for (const adds of [true, false, null]) {
+    for (const t of ['{{ bos_token }}{{ bos_token }}' + C, '{{ bos_token + bos_token }}' + C, '<s>{{ bos_token }}' + C]) {
+      const found = on(t, adds, '<s>')
+      assert.deepEqual(found.map((i) => [i.id, i.severity]), [['double-bos', 'error']], `${t} ${adds}`)
+    }
+  }
+  // BOS from the first message counts too: it is tokenized the same.
+  assert.equal(on('{{ bos_token }}{{ messages[0].content }}', false, '<s>', [{ role: 'user', content: '<s>hi' }])[0].severity, 'error')
+  // Llama 2 repeats BOS before every later user turn.
+  const llama2 = "{% for m in messages %}{% if m.role == 'user' %}{{ bos_token + '[INST] ' + m.content + ' [/INST]' }}{% else %}{{ ' ' + m.content + ' </s>' }}{% endif %}{% endfor %}"
+  assert.deepEqual(on(llama2, false, '<s>').map((i) => i.id), ['bos'])
+  assert.deepEqual(on(llama2, true, '<s>').map((i) => i.severity), ['error'])
+  assert.deepEqual(on('{{ bos_token }}' + C, null, '<s>').map((i) => i.id), ['bos-unknown'])
+  assert.deepEqual(on(C, null, undefined), [])
+  assert.deepEqual(on(C, null, ''), [])
+})

@@ -314,7 +314,9 @@ export function lint(ctx: LintContext): Issue[] {
 
   // --- BOS
   if (bos && text.startsWith(bos)) {
-    if (ctx.tokenizerAddsBos === true) {
+    if (text.startsWith(bos + bos)) {
+      add('error', 'double-bos', 'Duplicate BOS token', `The rendered prompt itself starts with ${bos}${bos}, whatever the tokenizer adds${ctx.tokenizerAddsBos ? ' (and here it adds one more)' : ''}. Models are trained on a single BOS, so this is a classic silent quality drop. Write bos_token once, and not in the first message.`)
+    } else if (ctx.tokenizerAddsBos === true) {
       add('error', 'double-bos', 'Duplicate BOS token', `The template emits ${bos} and the tokenizer also prepends it on encode(). Tokenizing the rendered string with add_special_tokens=True yields two BOS tokens, a classic silent quality drop. Encode with add_special_tokens=False, or use apply_chat_template(tokenize=True).`)
     } else if (ctx.tokenizerAddsBos === null) {
       add('info', 'bos-unknown', `Template emits ${bos}`, 'If your tokenizer also prepends BOS (add_bos_token or a TemplateProcessing post-processor), encode with add_special_tokens=False to avoid a double BOS.')
