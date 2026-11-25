@@ -49,7 +49,7 @@ test('#6 a share link that is not a setup keeps the saved work', async ({ page }
   expect((await stored(page))?.override).toBe('MINE')
 })
 
-test.fail('#7 the revision in a Hub URL is the one that is loaded', async ({ page, hub }) => {
+test('#7 the revision in a Hub URL is the one that is loaded', async ({ page, hub }) => {
   hub.files['test/jinja-wins@v1.0/chat_template.jinja'] = { body: 'V1' }
   await openLab(page)
   await loadModel(page, 'https://huggingface.co/test/jinja-wins/tree/v1.0')

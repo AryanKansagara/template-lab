@@ -1,4 +1,4 @@
-import { test, expect, openLab, loadModel, prompt, tab, issue, conversation, setSwitch, stored } from './fixtures.ts'
+import { test, expect, openLab, loadModel, prompt, tab, issue, conversation, setSwitch, stored, wordTokenizer } from './fixtures.ts'
 
 const meta = '.source .meta'
 
@@ -97,4 +97,33 @@ test('editing a Hub template, resetting it, and the edit surviving a reload', as
   await expect.poll(() => prompt(page)).toBe('EDITED 3')
   await page.getByRole('button', { name: 'edited · reset' }).click()
   await expect.poll(() => prompt(page)).toContain('<|im_start|>user\na<|im_end|>')
+})
+
+test('a PR revision is used for the template, the config and the tokenizer, and is shown', async ({ page, hub }) => {
+  hub.files['test/tiny@refs/pr/1/tokenizer_config.json'] = { body: { tokenizer_class: 'PreTrainedTokenizerFast', bos_token: '<s>', eos_token: '</s>', unk_token: '<unk>', chat_template: 'alpha {{ messages[0].content }}' } }
+  // Same words, other ids, so the tokenizer's revision shows.
+  hub.files['test/tiny@refs/pr/1/tokenizer.json'] = { body: { ...wordTokenizer, model: { ...wordTokenizer.model, vocab: { '<unk>': 0, '<s>': 1, '</s>': 2, alpha: 30, hi: 60 } } } }
+  await openLab(page)
+  await loadModel(page, 'https://huggingface.co/test/tiny/blob/refs%2Fpr%2F1/tokenizer_config.json?library=transformers#L3')
+  await expect(page.locator(meta)).toContainText('revision refs/pr/1')
+  await conversation(page, [{ role: 'user', content: 'hi' }])
+  await expect.poll(() => prompt(page)).toBe('alpha hi')
+  await tab(page, 'Tokens')
+  await page.getByRole('button', { name: 'Load tokenizer' }).click()
+  await page.getByLabel('ids', { exact: true }).check()
+  await expect(page.locator('.chip')).toHaveText(['30', '60'])
+  await expect(page.locator('.pane')).toContainText('test/tiny@refs/pr/1')
+  // transformers.js asks whether main has a tokenizer_config.json before loading any revision; nothing else comes from main.
+  expect(hub.seen.filter((p) => p.includes('/test/tiny/') && !p.includes('/resolve/refs%2Fpr%2F1/'))).toEqual(['/test/tiny/resolve/main/tokenizer_config.json'])
+  // Back on main the tag goes away and main's files are used.
+  await loadModel(page, 'https://huggingface.co/test/tiny/tree/main')
+  await expect(page.locator(meta)).not.toContainText('revision')
+  await expect(page.locator('.chip')).toHaveText(['1', '6', '2'])
+})
+
+test('a revision that does not exist is an error, not main', async ({ page }) => {
+  await openLab(page)
+  await loadModel(page, 'https://huggingface.co/test/jinja-wins/tree/v9')
+  await expect(page.locator('.hub-error')).toContainText('test/jinja-wins has no revision called v9.')
+  await expect(page.getByRole('button', { name: 'Copy', exact: true })).toHaveCount(0)
 })
