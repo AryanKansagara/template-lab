@@ -313,3 +313,16 @@ test('a raise about the system message gets the advice its text calls for', () =
     assert.match(hint(m), /refuses this conversation shape\.$/, m)
   assert.match(hint('After the optional system message, conversation roles must alternate user/assistant'), /Merge consecutive/)
 })
+
+test('"never read" follows what the template reads, not the words in it', () => {
+  const C = '{% for m in messages %}{{ m.role }}{{ m.content }}{% endfor %}'
+  const unread = (template: string, kwargs: Record<string, unknown> = { x: 1 }) =>
+    lint({ template, input: { messages: [{ role: 'user', content: 'hi' }], addGenerationPrompt: false, kwargs }, tokenizerAddsBos: null }).filter((i) => i.id.startsWith('kwarg-')).map((i) => i.id.slice(6))
+  for (const t of ['{# x #}', 'x', "{{ 'x' }}", '{{ messages[0].x }}', "{{ messages[0]['x'] }}", '{% set x = 1 %}{{ x }}', '{% for x in messages %}{{ x.role }}{% endfor %}', '{% macro f(x) %}{{ x }}{% endmacro %}{{ f(1) }}', '{% set ns = namespace(x=1) %}{{ ns.x }}', '{% set ns = namespace(y=1) %}{% set ns.x = 2 %}', '{% if messages %}{% set x = 1 %}{% else %}{% set x = 2 %}{% endif %}{{ x }}', '{% for m in messages if m.x %}a{% endfor %}', '{% set x %}q{% endset %}{{ x }}', "{{ 'a' is string }}", "{% set x, y = ['a', 'b'] %}{{ x }}"])
+    assert.deepEqual(unread(t + C), ['x'], t)
+  for (const t of ['{{ x }}', '{% if x is defined %}a{% endif %}', '{% if x is not defined %}{% set x = true %}{% endif %}{{ x }}', '{% set x = x | default(1) %}', '{{ y | default(x) }}', '{% if messages %}{% set x = 1 %}{% endif %}{{ x }}', '{{ messages[x - 1] }}', '{{ messages[x:] }}', "{{ {'k': x} }}", '{{ "a" if x else "b" }}', '{{ "a" if x }}', '{% for m in messages if x %}a{% endfor %}', '{% for m in messages %}{% set x = 1 %}{% endfor %}{{ x }}', '{% macro f(a=x) %}{{ a }}{% endmacro %}', '{% macro f() %}{{ x }}{% endmacro %}{% set x = 2 %}', '{% if not x %}a{% endif %}', '{{ "a" ~ x }}', '{{ x | tojson }}', '{{ x.y }}', '{% set ns = namespace(y=x) %}', '{% filter upper %}{{ x }}{% endfilter %}', '{% for x in x %}a{% endfor %}', '{% if 1 in [x] %}a{% endif %}', '{{ raise_exception(x) if false }}'])
+    assert.deepEqual(unread(t + C), [], t)
+  assert.deepEqual(unread(C, { role: 'x', content: 1, messages_: 2 }), ['role', 'content', 'messages_'])
+  for (const [name, k] of [['qwen3', 'enable_thinking'], ['llama31', 'date_string'], ['llama31', 'tools_in_user_message'], ['smollm3', 'enable_thinking']])
+    assert.ok(!ids(lintFor(name, { kwargs: { [k]: 'x' } })).includes(`kwarg-${k}`), `${name} ${k}`)
+})
