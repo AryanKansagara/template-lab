@@ -259,6 +259,10 @@ export function lint(ctx: LintContext): Issue[] {
   }
 
   // --- tools
+  // A name in the prompt proves nothing by itself: it may come from a message, a schema or another call.
+  // So the tool or call is renamed (`r`), and the prompt must follow. Templates that special-case or refuse
+  // the new name still count when the render changed and the real name is there.
+  const shown = (name: string, r: RenderResult) => (r.ok && r.text.includes(PROBE)) || ((!r.ok || r.text !== text) && text.includes(name))
   const tools = base.tools ?? []
   if (tools.length) {
     const without = run({ tools: null })
@@ -266,15 +270,26 @@ export function lint(ctx: LintContext): Issue[] {
     if (without.ok && without.text === text) {
       add('warn', 'tools-ignored', 'Tools are ignored by this template', `Passing tools=[…] changes nothing: the model never sees ${names.map((n) => '`' + n + '`').join(', ') || 'the schemas'}. Use a tool-aware template (some repos ship a named "tool_use" template) or inject schemas into the system prompt yourself.`)
     } else {
-      const missing = names.filter((n) => !text.includes(n))
+      const missing = tools.flatMap((t, i) => {
+        const name = toolName(t)
+        if (!name) return [`tool #${i + 1} (has no name, so it can't be checked)`]
+        const r = run({ tools: tools.map((x, j) => (j === i ? renamed(x) : x)) })
+        return shown(name, r) ? [] : [name]
+      })
       if (missing.length) add('warn', 'tools-partial', 'Some tools are missing from the prompt', `Not rendered: ${missing.join(', ')}.`)
       else add('ok', 'tools', `Tools rendered (${tools.length})`, 'All tool schemas appear in the prompt.')
     }
   }
   msgs.forEach((m, i) => {
     if (m.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) return
-    const names = m.tool_calls.map(toolName).filter(Boolean) as string[]
-    if (names.some((n) => !text.includes(n))) {
+    const calls = m.tool_calls
+    const dropped = calls.some((c, k) => {
+      const name = toolName(c)
+      if (!name) return false
+      const r = run({ messages: msgs.map((x, j) => (j === i ? { ...x, tool_calls: calls.map((y, l) => (l === k ? renamed(y) : y)) } : x)) })
+      return !shown(name, r)
+    })
+    if (dropped) {
       add('warn', `calls-${i}`, `tool_calls in message #${i + 1} are dropped`, 'The assistant’s tool calls never appear in the prompt, so the model can’t see what it called before reading the results.')
     }
   })
@@ -300,6 +315,15 @@ function sortIssues(issues: Issue[]) {
 function toolName(t: unknown): string | undefined {
   const o = t as { name?: string; function?: { name?: string } }
   return o?.function?.name ?? o?.name
+}
+
+/** A name no conversation contains, in characters every template and JSON writer passes through. */
+const PROBE = 'tl0_renamed_probe'
+
+/** A copy of a tool or tool call under the probe name. */
+function renamed(t: unknown): unknown {
+  const o = t as { name?: string; function?: { name?: string } }
+  return o.function?.name !== undefined ? { ...o, function: { ...o.function, name: PROBE } } : { ...o, name: PROBE }
 }
 
 export function firstDiff(a: string, b: string) {
