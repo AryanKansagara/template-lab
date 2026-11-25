@@ -66,6 +66,33 @@ test('the kwarg shortcut fills in what the template reads', async ({ page }) => 
   expect(JSON.parse(await page.getByLabel('Extra kwargs').inputValue())).toEqual({ enable_thinking: false })
 })
 
+test('the kwarg shortcut erases nothing that was typed and says when the kwargs must be fixed', async ({ page }) => {
+  await openLab(page)
+  await paste(page, '{% if foo is defined %}{% endif %}x')
+  const kwargs = page.getByLabel('Extra kwargs')
+  const pill = page.getByRole('button', { name: 'foo', exact: true })
+  const toast = page.getByRole('status')
+  for (const bad of ['null', '[1]', '"x"', '5', '1.0', '{"a": 1,}', '{"a"']) {
+    await page.reload()
+    await kwargs.fill(bad)
+    await pill.click()
+    await expect(toast).toHaveText('Fix the extra kwargs first: they must be a JSON object.')
+    await expect(kwargs).toHaveValue(bad)
+  }
+  for (const [before, after] of [
+    ['', '{\n  "foo": ""\n}'],
+    [' { } ', '{\n  "foo": ""\n}'],
+    ['{"a": 1.0, "b": 12345678901234567890}', '{"a": 1.0, "b": 12345678901234567890,\n  "foo": ""\n}'],
+    ['{\n  "a": "}"\n}\n', '{\n  "a": "}",\n  "foo": ""\n}'],
+    ['{"foo": 3}', '{"foo": 3}'],
+  ]) {
+    await kwargs.fill(before)
+    await pill.click()
+    await expect(kwargs).toHaveValue(after)
+    await expect(page.locator('.input-errors')).toHaveCount(0)
+  }
+})
+
 test('linter: dropped system message, ignored generation prompt, trailing space, prefix mismatch', async ({ page }) => {
   await openLab(page)
   await conversation(page, [{ role: 'system', content: 'Rules' }, { role: 'user', content: 'Hi' }])

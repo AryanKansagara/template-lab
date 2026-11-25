@@ -118,7 +118,7 @@ test.fail('#15 a refused copy is not reported as copied', async ({ page }) => {
 
 // #16 (comparing 20,000 lines freezes the tab) has no test here: pinning it would hang a worker for minutes.
 
-test.fail('#17 the kwarg shortcut does not erase invalid kwargs', async ({ page }) => {
+test('#17 the kwarg shortcut does not erase invalid kwargs', async ({ page }) => {
   await openLab(page)
   await paste(page, '{% if foo is defined %}{% endif %}x')
   await page.getByLabel('Extra kwargs').fill('{"a": 1,}')
