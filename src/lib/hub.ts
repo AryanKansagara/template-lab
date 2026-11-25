@@ -183,6 +183,17 @@ export function parseConfig(id: string, cfg: Record<string, unknown>, revision =
   }
 }
 
+async function readJson(res: Response, file: string): Promise<Record<string, unknown>> {
+  let v: unknown
+  try {
+    v = await res.json()
+  } catch {
+    throw new HubError('invalid', `${file} is not valid JSON.`)
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new HubError('invalid', `${file} can't be read: it does not hold a JSON object.`)
+  return v as Record<string, unknown>
+}
+
 export async function fetchModelTemplate(rawId: string, f: Fetch = fetch): Promise<ModelTemplate> {
   const ref = parseModelRef(rawId)
   if (!ref) throw new HubError('invalid', 'Model ids look like org/name, e.g. Qwen/Qwen2.5-7B-Instruct.')
@@ -190,14 +201,7 @@ export async function fetchModelTemplate(rawId: string, f: Fetch = fetch): Promi
 
   // Like transformers, a standalone chat_template.jinja wins over chat_template in tokenizer_config.json.
   const [cfgRes, jinja] = await Promise.all([get(ref, 'tokenizer_config.json', f), get(ref, 'chat_template.jinja', f)])
-  let cfg: Record<string, unknown> = {}
-  if (cfgRes) {
-    try {
-      cfg = await cfgRes.json()
-    } catch {
-      throw new HubError('invalid', 'tokenizer_config.json is not valid JSON.')
-    }
-  }
+  const cfg = cfgRes ? await readJson(cfgRes, 'tokenizer_config.json') : {}
   const model = parseConfig(id, cfg, revision)
   if (jinja) return { ...model, templates: [{ name: 'default', template: await jinja.text() }], source: 'chat_template.jinja' }
   if (model.templates.length) return model
@@ -205,7 +209,7 @@ export async function fetchModelTemplate(rawId: string, f: Fetch = fetch): Promi
   // Multimodal processors keep it in chat_template.json.
   const json = await get(ref, 'chat_template.json', f)
   if (json) {
-    const templates = parseTemplates((await json.json().catch(() => ({})))?.chat_template)
+    const templates = parseTemplates((await readJson(json, 'chat_template.json')).chat_template)
     if (templates.length) return { ...model, templates, source: 'chat_template.json' }
   }
   if (!cfgRes) throw new HubError('not-found', `${refLabel(ref)} has no tokenizer_config.json or chat template files.`)

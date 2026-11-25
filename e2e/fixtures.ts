@@ -74,6 +74,11 @@ const HUB_FILES: Record<string, Route> = {
   'test/broken/tokenizer_config.json': { status: 503, body: 'down' },
   'test/truncated-processor/tokenizer_config.json': { body: { bos_token: '<s>' } },
   'test/truncated-processor/chat_template.json': { body: '{"chat_template": "PROC:{{ mess' },
+  'test/null-config/tokenizer_config.json': { body: 'null' },
+  'test/list-config/tokenizer_config.json': { body: '[]' },
+  'test/null-processor/tokenizer_config.json': { body: { bos_token: '<s>' } },
+  'test/null-processor/chat_template.json': { body: 'null' },
+  'test/empty-processor/chat_template.json': { body: '' },
   'meta-llama/Llama-3.1-8B-Instruct/tokenizer_config.json': { status: 401, headers: { 'x-error-code': 'GatedRepo' } },
 }
 
