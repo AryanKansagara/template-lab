@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { chooseTemplate, DEFAULT_MODELS, fetchModelTemplate, HubError, parseModelRef, refLabel, type ModelTemplate, type TemplateChoice } from './lib/hub.ts'
 import { CHATML_FALLBACK, diff, diffUnits, lint, render, templateKwargs, type ChatMessage, type Issue, type RenderResult, type Role, type SpecialTokens } from './lib/template.ts'
 import { parsePython, PyFloat } from './lib/json.ts'
@@ -16,6 +16,10 @@ interface LabState {
   tplPick: string
   pasteBos: string
   pasteEos: string
+  /** The pasted template while the Hub tab is open, and the edited Hub template (and its model) while the paste tab is. */
+  pasted: string | null
+  hubEdit: string | null
+  hubModel: string
   compare: string
   msgs: UIMsg[]
   toolsOn: boolean
@@ -31,6 +35,9 @@ const DEFAULT: LabState = {
   tplPick: '',
   pasteBos: '',
   pasteEos: '',
+  pasted: null,
+  hubEdit: null,
+  hubModel: '',
   compare: 'mistralai/Mistral-7B-Instruct-v0.3',
   msgs: SAMPLES[0].msgs,
   toolsOn: false,
@@ -40,17 +47,19 @@ const DEFAULT: LabState = {
   tokenize: false,
 }
 
+const NULLABLE = ['override', 'pasted', 'hubEdit']
+
 /** Shared links and localStorage are untrusted: keep only well-shaped fields. */
 function sanitize(raw: unknown): Partial<LabState> {
   if (!raw || typeof raw !== 'object') return {}
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(raw)) {
-    if (k in DEFAULT && typeof v === typeof DEFAULT[k as keyof LabState] && k !== 'msgs' && k !== 'override') out[k] = v
+    if (k in DEFAULT && typeof v === typeof DEFAULT[k as keyof LabState] && k !== 'msgs' && !NULLABLE.includes(k)) out[k] = v
   }
-  const r = raw as { override?: unknown; msgs?: unknown; tplName?: unknown }
+  const r = raw as { msgs?: unknown; tplName?: unknown }
   // Before tplPick, 'default' stood for "not picked" too.
   if (out.tplPick === undefined && typeof r.tplName === 'string' && r.tplName !== 'default') out.tplPick = r.tplName
-  if (typeof r.override === 'string') out.override = r.override
+  for (const k of NULLABLE) if (typeof (raw as Record<string, unknown>)[k] === 'string') out[k] = (raw as Record<string, unknown>)[k]
   if (Array.isArray(r.msgs)) {
     out.msgs = r.msgs
       .filter((m) => m && ['system', 'user', 'assistant', 'tool'].includes(m.role) && typeof m.content === 'string')
@@ -192,9 +201,11 @@ export default function Lab() {
   const [showWs, setShowWs] = useState(true)
   const [showIds, setShowIds] = useState(false)
   const [mode, setMode] = useState<'hub' | 'paste'>(() => (state.model ? 'hub' : 'paste'))
-  const [draft, setDraft] = useState(state.model)
+  const [draft, setDraft] = useState(state.model || state.hubModel)
   const [compareDraft, setCompareDraft] = useState(state.compare)
   const [toast, setToast] = useState('')
+  /** the Hub template the paste tab started from */
+  const copied = useRef<string | null>(null)
 
   // Shared link wins over saved state.
   useEffect(() => {
@@ -216,8 +227,9 @@ export default function Lab() {
       // Anything that is not a setup (a number, a list, no known field) must not replace the saved work.
       if (!Object.keys(read).length) return flash('That share link is broken or truncated.')
       if (!messagesIntact(s, read)) return flash('That share link has messages this lab can’t read, so it was not opened.')
-      const next = { ...DEFAULT, ...read }
-      setState(next)
+      const next = { ...DEFAULT, ...read, hubEdit: null, hubModel: '' }
+      // The template set aside in this browser is not part of the link, and stays.
+      setState((s) => ({ ...next, pasted: s.pasted }))
       setDraft(next.model)
       setCompareDraft(next.compare)
       setMode(next.model ? 'hub' : 'paste')
@@ -309,7 +321,7 @@ export default function Lab() {
   const kwargsDetected = useMemo(() => templateKwargs(A?.template ?? ''), [A?.template])
 
   async function share() {
-    const s = await encodeState(state)
+    const s = await encodeState({ ...state, pasted: DEFAULT.pasted, hubEdit: DEFAULT.hubEdit, hubModel: DEFAULT.hubModel })
     const url = `${location.origin}/app#s=${s}`
     try {
       await navigator.clipboard.writeText(url)
@@ -324,7 +336,31 @@ export default function Lab() {
     if (!clean) return
     setDraft(clean)
     setMode('hub')
-    set({ model: clean, override: null, tplPick: '' })
+    setState((s) => ({
+      ...s,
+      model: clean,
+      override: clean === s.hubModel && !s.model ? s.hubEdit : null,
+      tplPick: '',
+      // Leaving the paste tab sets its template aside; a copy of a Hub template nobody touched is not worth it.
+      pasted: !s.model && s.override?.trim() && s.override !== copied.current ? s.override : s.pasted,
+      hubEdit: null,
+      hubModel: '',
+    }))
+  }
+
+  function pasteTab() {
+    if (mode === 'paste') return setTab('template')
+    if (state.pasted === null) copied.current = A?.template ?? ''
+    setMode('paste')
+    setTab('template')
+    set({
+      model: '',
+      hubModel: state.override === null ? '' : state.model,
+      hubEdit: state.override,
+      pasted: null,
+      override: state.pasted ?? state.override ?? A?.template ?? '',
+      ...(state.pasted === null && { pasteBos: modelA?.specials.bos_token ?? state.pasteBos, pasteEos: modelA?.specials.eos_token ?? state.pasteEos }),
+    })
   }
 
   function loadSample(id: string) {
@@ -369,7 +405,7 @@ export default function Lab() {
             <button role="tab" aria-selected={mode === 'hub'} onClick={() => { setMode('hub'); if (!state.model) loadModel(draft || DEFAULT.model) }}>
               From the Hub
             </button>
-            <button role="tab" aria-selected={mode === 'paste'} onClick={() => { setMode('paste'); set({ model: '', override: state.override ?? A?.template ?? '', pasteBos: modelA?.specials.bos_token ?? state.pasteBos, pasteEos: modelA?.specials.eos_token ?? state.pasteEos }); setTab('template') }}>
+            <button role="tab" aria-selected={mode === 'paste'} onClick={pasteTab}>
               Paste a template
             </button>
           </div>
