@@ -77,7 +77,7 @@ test('#10 a template that writes BOS twice is an error', async ({ page }) => {
   await expect(issue(page, 'Duplicate BOS token')).toBeVisible({ timeout: 3000 })
 })
 
-test.fail('#11 a kwarg that only appears in a comment is reported as never read', async ({ page }) => {
+test('#11 a kwarg that only appears in a comment is reported as never read', async ({ page }) => {
   await openLab(page)
   await paste(page, '{# enable_thinking #}' + CHAT)
   await page.getByLabel('Extra kwargs').fill('{"enable_thinking": false}')

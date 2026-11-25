@@ -436,9 +436,10 @@ export function lint(ctx: LintContext): Issue[] {
   })
 
   // --- kwargs
+  const reads = inputsRead(tpl)
   for (const k of Object.keys(base.kwargs ?? {})) {
-    if (!new RegExp(`\\b${escapeRe(k)}\\b`).test(tpl)) {
-      add('warn', `kwarg-${k}`, `Kwarg \`${k}\` is never read`, `This template doesn't reference \`${k}\`, so passing it does nothing (e.g. enable_thinking only exists in Qwen3-style templates).`)
+    if (!reads.has(k)) {
+      add('warn', `kwarg-${k}`, `Kwarg \`${k}\` is never read`, `This template never reads the value of \`${k}\`, so passing it does nothing (e.g. enable_thinking only exists in Qwen3-style templates).`)
     }
   }
 
@@ -474,6 +475,89 @@ export function firstDiff(a: string, b: string) {
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * The names a template reads from its inputs: variables used before the template has certainly assigned them.
+ * `x` in a comment, a literal, an attribute, a keyword argument or a `set` target is not a read.
+ */
+function inputsRead(tpl: string): Set<string> {
+  const read = new Set<string>()
+  const t = compile(tpl)
+  if (!(t instanceof Template)) return read
+  const names = (x: unknown): string[] => {
+    const n = x as Node
+    return n.type === 'Identifier' ? [n.value as string] : n.type === 'TupleLiteral' ? (n.value as unknown[]).flatMap(names) : []
+  }
+  const params = (args: unknown[], local: Set<string>) =>
+    args.flatMap((a) => {
+      const n = a as Node
+      if (n.type !== 'KeywordArgumentExpression') return names(n)
+      walk(n.value, local)
+      return names(n.key)
+    })
+  /** Records what `x` reads; `local` gains the names it certainly assigns. */
+  function walk(x: unknown, local: Set<string>): void {
+    if (Array.isArray(x)) return x.forEach((v) => walk(v, local))
+    if (x instanceof Map) return x.forEach((v, k) => (walk(k, local), walk(v, local)))
+    if (!x || typeof x !== 'object') return
+    const n = x as Node
+    const inner = (...more: string[]) => new Set([...local, ...more])
+    switch (n.type) {
+      case 'Identifier':
+        if (!local.has(n.value as string)) read.add(n.value as string)
+        return
+      case 'MemberExpression':
+        walk(n.object, local)
+        if (n.computed) walk(n.property, local)
+        return
+      case 'KeywordArgumentExpression':
+        return walk(n.value, local)
+      case 'TestExpression':
+        return walk(n.operand, local)
+      case 'FilterExpression':
+      case 'FilterStatement': {
+        const body = inner()
+        walk(n.operand, body)
+        walk(n.body, body)
+        return walk(n.filter!.args, local)
+      }
+      case 'Set': {
+        walk(n.value, local)
+        walk(n.body, inner())
+        const target = n.assignee as Node
+        if (target.type === 'MemberExpression') walk(target.object, local)
+        names(target).forEach((v) => local.add(v))
+        return
+      }
+      case 'If': {
+        walk(n.test, local)
+        const [a, b] = [inner(), inner()]
+        walk(n.body, a)
+        walk(n.alternate, b)
+        a.forEach((v) => b.has(v) && local.add(v))
+        return
+      }
+      case 'For': {
+        const iter = n.iterable as Node
+        const vars = names(n.loopvar)
+        walk(iter.type === 'SelectExpression' ? iter.lhs : iter, local)
+        if (iter.type === 'SelectExpression') walk(iter.test, inner(...vars))
+        walk(n.body, inner(...vars, 'loop'))
+        return walk(n.defaultBlock, inner())
+      }
+      case 'Macro': {
+        local.add((n.name as Node).value as string)
+        return walk(n.body, inner(...params(n.args!, local), 'caller', 'varargs', 'kwargs'))
+      }
+      case 'CallStatement':
+        walk(n.call, local)
+        return walk(n.body, inner(...params((n.callerArgs as unknown[] | null) ?? [], local)))
+    }
+    for (const [k, v] of Object.entries(n)) if (k !== 'operator') walk(v, local)
+  }
+  walk(t.parsed.body, new Set())
+  return read
+}
 
 /** Variables a template treats as optional inputs (`x is defined`), minus the standard ones. */
 export function templateKwargs(tpl: string): string[] {
