@@ -1,6 +1,6 @@
 import { test, expect, openLab, paste, conversation, prompt, issue, setSwitch, loadModel, stored, tab, shareHash } from './fixtures.ts'
 
-// Each test states the right behaviour of a filed bug and is expected to fail until the bug is fixed.
+// Each test states the right behaviour of a filed bug. Those marked test.fail are not fixed yet.
 
 const CHAT = '{% for m in messages %}<|{{ m.role }}|>{{ m.content }}<|end|>{% endfor %}{% if add_generation_prompt %}<|assistant|>{% endif %}'
 const counts = '.card.lint .counts'
