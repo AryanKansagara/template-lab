@@ -34,12 +34,12 @@ test.fail('#5 the lab keeps working when the state cannot be stored', async ({ p
   await expect(page.getByRole('heading', { name: 'Conversation' })).toBeVisible()
 })
 
-test.fail('#6 a malformed preset link opens a working lab', async ({ page }) => {
+test('#6 a malformed preset link opens a working lab', async ({ page }) => {
   await openLab(page, '#try=chat|%')
   await expect(page.getByRole('heading', { name: 'Conversation' })).toBeVisible()
 })
 
-test.fail('#6 a share link that is not a setup keeps the saved work', async ({ page }) => {
+test('#6 a share link that is not a setup keeps the saved work', async ({ page }) => {
   await openLab(page)
   await paste(page, 'MINE')
   await expect.poll(async () => (await stored(page))?.override).toBe('MINE')

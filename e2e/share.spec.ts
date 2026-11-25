@@ -82,3 +82,43 @@ test('landing presets open the lab with the sample and the model', async ({ page
   await page.getByRole('link', { name: /gemma-2-2b-it/ }).click()
   await expect(page.locator('.card.lint')).toContainText('Template raised: System role not supported')
 })
+
+const BROKEN = 'That share link is broken or truncated.'
+const UNREADABLE = 'That share link has messages this lab can’t read, so it was not opened.'
+const ok = { model: '', override: 'OTHER' }
+for (const [name, payload, message] of [
+  ['a number', 5, BROKEN],
+  ['a string', 'x', BROKEN],
+  ['a list', [1], BROKEN],
+  ['an empty object', {}, BROKEN],
+  ['only unknown fields', { evil: 1, __proto__x: {} }, BROKEN],
+  ['messages that are not a list', { ...ok, msgs: 'hi' }, UNREADABLE],
+  ['an unknown role', { ...ok, msgs: [{ role: 'developer', content: 'x' }, { role: 'user', content: 'y' }] }, UNREADABLE],
+  ['list content', { ...ok, msgs: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }] }, UNREADABLE],
+  ['a null message', { ...ok, msgs: [null] }, UNREADABLE],
+  ['tool calls that are not text', { ...ok, msgs: [{ role: 'assistant', content: '', toolCalls: [{}] }] }, UNREADABLE],
+] as const) {
+  test(`share link with ${name} is refused and the saved work is kept`, async ({ page }) => {
+    const before = await ownWork(page)
+    await page.goto('about:blank')
+    await page.goto('/app' + (await shareHash(payload)))
+    await expect(page.getByRole('status')).toHaveText(message)
+    expect(await page.evaluate(() => localStorage.getItem('tl:state'))).toBe(before)
+  })
+}
+
+for (const hash of ['#try=', '#try=chat|', '#try=chat|%', '#try=%E0%A4%A|x', '#try=nosuch|Qwen%2FQwen3-8B']) {
+  test(`preset link ${hash} says it can't be read and keeps the saved work`, async ({ page }) => {
+    const before = await ownWork(page)
+    await page.goto('about:blank')
+    await page.goto('/app' + hash)
+    await expect(page.getByRole('status')).toHaveText('That link’s sample or model can’t be read.')
+    expect(await page.evaluate(() => localStorage.getItem('tl:state'))).toBe(before)
+  })
+}
+
+test('a preset link works with an escaped separator', async ({ page }) => {
+  await page.goto('/app#try=thinking%7CQwen%2FQwen3-8B')
+  await expect(page.locator('.source .meta')).toContainText('Qwen/Qwen3-8B')
+  expect((await stored(page))?.kwargs).toContain('enable_thinking')
+})
