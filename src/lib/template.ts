@@ -1,4 +1,5 @@
 import { Template } from '@huggingface/jinja'
+import { floatJson, floatRepr, PyFloat } from './json.ts'
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -48,7 +49,7 @@ export function pyRepr(v: unknown): string {
   if (Array.isArray(v)) return '[' + v.map(pyRepr).join(', ') + ']'
   if (v && typeof v === 'object' && 'type' in v && 'value' in v) {
     const r = v as { type: string; value: unknown }
-    if (r.type === 'FloatValue' && Number.isInteger(r.value)) return `${r.value}.0`
+    if (r.type === 'FloatValue') return floatRepr(r.value as number)
     return pyRepr(r.value)
   }
   if (typeof v === 'string') return pyQuote(v)
@@ -61,10 +62,106 @@ export function pyRepr(v: unknown): string {
 /** Python str() of a one-item list: inside a list the engine keeps the runtime type (1.0, undefined), which it strips from plain arguments. */
 const pyStr = ([v]: { type: string; value: unknown }[]) => (v.type === 'UndefinedValue' ? '' : v.type === 'StringValue' ? v.value : pyRepr(v))
 
+type Runtime = { type: string; value: unknown }
+interface JsonOptions { indent?: number | null; ensureAscii?: boolean; separators?: [string, string] | null; sortKeys?: boolean }
+
+/** json.dumps() of a runtime value. The engine's own tojson writes every float as a JS number. */
+function pyJson(v: Runtime, o: JsonOptions, depth = 0): string {
+  const str = (s: unknown) => {
+    const j = JSON.stringify(s)
+    return o.ensureAscii ? j.replace(/[\u007f-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) : j
+  }
+  const [item, key] = o.separators ?? [o.indent ? ',' : ', ', ': ']
+  const wrap = (open: string, parts: string[], close: string) => {
+    if (!o.indent || !parts.length) return open + parts.join(item) + close
+    const pad = '\n' + ' '.repeat(o.indent * depth)
+    const inner = pad + ' '.repeat(o.indent)
+    return open + inner + parts.join(item + inner) + pad + close
+  }
+  switch (v.type) {
+    case 'NullValue':
+    case 'UndefinedValue':
+      return 'null'
+    case 'FloatValue':
+      return floatJson(v.value as number)
+    case 'IntegerValue':
+    case 'BooleanValue':
+      return String(v.value)
+    case 'StringValue':
+      return str(v.value)
+    case 'ArrayValue':
+    case 'TupleValue':
+      return wrap('[', (v.value as Runtime[]).map((x) => pyJson(x, o, depth + 1)), ']')
+    case 'ObjectValue':
+    case 'NamespaceValue': {
+      const entries = [...(v.value as Map<string, Runtime>)]
+      if (o.sortKeys) entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      return wrap('{', entries.map(([k, x]) => str(k) + key + pyJson(x, o, depth + 1)), '}')
+    }
+    default:
+      throw new Error(`Cannot convert to JSON: ${v.type}`)
+  }
+}
+
+/** The tojson filter, called as ([operand], keyword arguments). */
+function toJson([v]: Runtime[], named?: unknown): string {
+  const kw = named instanceof Map ? (named as Map<string, Runtime>) : new Map<string, Runtime>()
+  const option = <T>(name: string, type: string, what: string) => {
+    const x = kw.get(name)
+    if (!x || x.type === 'NullValue') return undefined
+    if (x.type !== type) throw new Error(`If set, ${name} must be ${what}`)
+    return x.value as T
+  }
+  const sep = kw.get('separators')
+  const pair = sep && sep.type !== 'NullValue' ? (sep.value as Runtime[]) : null
+  if (pair && !(Array.isArray(pair) && pair.length === 2 && pair.every((s) => s.type === 'StringValue'))) throw new Error('If set, separators must be a tuple of two strings')
+  return pyJson(v, {
+    indent: option<number>('indent', 'IntegerValue', 'a number'),
+    ensureAscii: option<boolean>('ensure_ascii', 'BooleanValue', 'a boolean'),
+    sortKeys: option<boolean>('sort_keys', 'BooleanValue', 'a boolean'),
+    separators: pair && [pair[0].value as string, pair[1].value as string],
+  })
+}
+
 type Node = { type?: string; value?: unknown; callee?: Node; filter?: Node; operand?: Node; args?: unknown[]; [k: string]: unknown }
 
+/** A call of our function `fn` on an expression, boxed in a list so that its runtime type survives. */
+const callOn = (fn: string, operand: unknown, args: unknown[] = []) => ({ type: 'CallExpression', callee: { type: 'Identifier', value: fn }, args: [{ type: 'ArrayLiteral', value: [operand] }, ...args] })
+
+/** `join`, unless it picks an attribute of the items. */
+const JOINS = (f: Node) => (f.type === 'CallExpression' ? f.callee : f)?.value === 'join' && !(f.args as Node[] | undefined)?.some((a) => (a.key as Node | undefined)?.value === 'attribute')
+
+/** The items of a list as strings; any other value as the engine would see it. */
+const pyItems = ([v]: Runtime[]) => (Array.isArray(v.value) ? (v.value as Runtime[]).map((x) => pyStr([x])) : v.type === 'StringValue' ? v.value : null)
+
+/** Does a value hold a number JS can't pass to the engine as it is? */
+const hasPyNumber = (v: unknown): boolean =>
+  typeof v === 'bigint' || v instanceof PyFloat || (!!v && typeof v === 'object' && Object.values(v).some(hasPyNumber))
+
+/** A value as a template literal, the only way to hand the engine a whole-valued float or a large integer. */
+function literal(v: unknown): Node {
+  if (v instanceof PyFloat) return { type: 'FloatLiteral', value: v.value }
+  if (typeof v === 'bigint') return { type: 'IntegerLiteral', value: v }
+  if (typeof v === 'number') return { type: Number.isInteger(v) ? 'IntegerLiteral' : 'FloatLiteral', value: v }
+  if (typeof v === 'string') return { type: 'StringLiteral', value: v }
+  if (Array.isArray(v)) return { type: 'ArrayLiteral', value: v.map(literal) }
+  if (v && typeof v === 'object') return { type: 'ObjectLiteral', value: new Map(Object.entries(v).map(([k, x]) => [literal(k), literal(x)])) }
+  return { type: 'Identifier', value: v === undefined ? '__tl_undefined' : v === null ? '__tl_none' : v ? '__tl_true' : '__tl_false' }
+}
+
+// {{ x }} of a float, list or dict prints repr(x); the engine prints JSON with JS numbers.
+// Its classes are not exported, so they are taken from values.
+new Template('{{ take([0.5, [], {}]) }}').render({
+  take: (values: Runtime[]) =>
+    values.forEach((v) => {
+      v.constructor.prototype.toString = function (this: Runtime) {
+        return pyRepr(this)
+      }
+    }),
+})
+
 /**
- * Route `x | string` and `raise_exception(...)` to our own functions, on the parsed template so that plain text,
+ * Route `x | string`, `x | tojson`, the operands of `~`, the items of `x | join` and `raise_exception(...)` to our own functions, on the parsed template so that plain text,
  * literals and comments that merely look like them are left alone.
  */
 function hook(x: unknown): void {
@@ -78,12 +175,19 @@ function hook(x: unknown): void {
   if (n.type === 'FilterExpression') {
     const f = n.filter!
     const name = f.type === 'CallExpression' ? f.callee : f
-    if (name?.type === 'Identifier' && name.value === 'string' && !f.args?.length) {
-      const operand = n.operand
+    if (name?.type === 'Identifier' && (name.value === 'tojson' || (name.value === 'string' && !f.args?.length))) {
+      const call = callOn(name.value === 'string' ? '__tl_str' : '__tl_json', n.operand, (f.args ?? []).filter((a) => (a as Node).type?.startsWith('Keyword')))
       delete n.operand
       delete n.filter
-      Object.assign(n, { type: 'CallExpression', callee: { type: 'Identifier', value: '__tl_str' }, args: [{ type: 'ArrayLiteral', value: [operand] }] })
+      Object.assign(n, call)
     }
+  }
+  // `join` joins str() of the items, like `~` below.
+  if (n.type === 'FilterExpression' && JOINS(n.filter!)) n.operand = callOn('__tl_items', n.operand)
+  // `~` joins str() of both sides; the engine joins JS values, so 1.0 would become 1.
+  if (n.type === 'BinaryExpression' && (n.operator as Node | undefined)?.value === '~') {
+    n.left = callOn('__tl_str', n.left)
+    n.right = callOn('__tl_str', n.right)
   }
 }
 
@@ -110,20 +214,40 @@ export function render(input: RenderInput): RenderResult {
   const t = compile(input.template)
   if (!(t instanceof Template)) return { ok: false, error: t }
   try {
-    const text = t.render({
+    const context: Record<string, unknown> = {
       ...input.specials,
       ...input.kwargs,
       messages: input.messages,
       tools: input.tools?.length ? input.tools : null,
       add_generation_prompt: input.addGenerationPrompt,
+    }
+    const odd = Object.entries(context).filter(([, v]) => hasPyNumber(v))
+    const program = Object.create(t) as Template
+    if (odd.length) {
+      const sets = odd.map(([k, v]) => ({ type: 'Set', assignee: { type: 'Identifier', value: k }, value: literal(v), body: [] }))
+      program.parsed = { ...t.parsed, body: [...(sets as unknown as typeof t.parsed.body), ...t.parsed.body] }
+    }
+    const text = program.render({
+      ...context,
+      ...Object.fromEntries(odd.map(([k]) => [k, null])),
+      __tl_undefined: undefined,
+      __tl_none: null,
+      __tl_true: true,
+      __tl_false: false,
       __tl_str: pyStr,
+      __tl_json: toJson,
+      __tl_items: pyItems,
       __tl_raise: (msg: unknown) => {
         throw new RaiseError(String(msg))
       },
     })
     return { ok: true, text }
   } catch (e) {
-    return { ok: false, error: { kind: e instanceof RaiseError ? 'raise' : 'runtime', message: (e as Error).message } }
+    const { message } = e as Error
+    if (e instanceof TypeError && /BigInt/i.test(message)) {
+      return { ok: false, error: { kind: 'runtime', message: 'The template calculates with an integer beyond ±9,007,199,254,740,991, which this lab can print but not compute with exactly. Python would not fail here.' } }
+    }
+    return { ok: false, error: { kind: e instanceof RaiseError ? 'raise' : 'runtime', message } }
   }
 }
 

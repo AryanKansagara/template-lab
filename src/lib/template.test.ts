@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { render, lint, pyRepr, segment, diff, diffUnits, templateKwargs, CHATML_FALLBACK, type ChatMessage, type RenderInput } from './template.ts'
+import { parsePython } from './json.ts'
 
 type Fx = { chat_template: string; bos_token: string | null; eos_token: string; add_bos_token: boolean | null }
 const fx: Record<string, Fx> = JSON.parse(readFileSync(new URL('./real-templates.fixture.json', import.meta.url), 'utf8'))
@@ -244,4 +245,34 @@ test('a tool or call counts as rendered only when the prompt follows its name', 
   // SmolLM3 renders schemas but its template never reads tool_calls.
   const smol = ids(lintFor('smollm3', { messages: trip(call('get_weather')), tools: weather }))
   assert.ok(smol.includes('tools') && smol.includes('calls-1'))
+})
+
+// Expected values produced by Jinja2 3.1.6 with the tojson filter of transformers' chat_template_utils.py (Python 3.10).
+test('JSON numbers render as Python has them', () => {
+  const r = (template: string, json: string) => {
+    const out = render({ template, messages: [], addGenerationPrompt: false, kwargs: parsePython(json) as Record<string, unknown> })
+    return out.ok ? out.text : `${out.error.kind}: ${out.error.message}`
+  }
+  const N = '{"x": [1.0, 12345678901234567890, 1e-7, 1e16, 1e22, 0.1, -0.0, -0, 1E3, 100000.0, 0.0001, 0.00001, 9007199254740993, 1e999, -5, 1.50]}'
+  assert.equal(r('{{ x | tojson }}', N), '[1.0, 12345678901234567890, 1e-07, 1e+16, 1e+22, 0.1, -0.0, 0, 1000.0, 100000.0, 0.0001, 1e-05, 9007199254740993, Infinity, -5, 1.5]')
+  assert.equal(r('{{ x | string }}', N), '[1.0, 12345678901234567890, 1e-07, 1e+16, 1e+22, 0.1, -0.0, 0, 1000.0, 100000.0, 0.0001, 1e-05, 9007199254740993, inf, -5, 1.5]')
+  assert.equal(r('{{ x }}', N), r('{{ x | string }}', N))
+  assert.equal(r('{% for n in x %}{{ n }} {% endfor %}', N), '1.0 12345678901234567890 1e-07 1e+16 1e+22 0.1 -0.0 0 1000.0 100000.0 0.0001 1e-05 9007199254740993 inf -5 1.5 ')
+  assert.equal(r("{{ 't=' ~ x[0] ~ x[1] ~ x[2] }}", N), 't=1.0123456789012345678901e-07')
+  assert.equal(r("{{ x | join('/') }}", '{"x": [1.0, 2, "a", true, null, 1e-7]}'), '1.0/2/a/True/None/1e-07')
+  assert.equal(r('{{ x }}', '{"x": {"a": [1.0, "b", null], "c": true}}'), "{'a': [1.0, 'b', None], 'c': True}")
+  assert.equal(r('{{ a + 1 }} {{ 1 if a == 1 else 0 }} {{ 1 if a is integer else 0 }} {{ 1 if z else 0 }}', '{"a": 1.0, "z": 0.0}'), '2.0 1 0 0')
+  assert.equal(r('{{ x | tojson(indent=2) }}', '{"x": {"b": [1.0, {}], "a": "é\\u007f"}}'), '{\n  "b": [\n    1.0,\n    {}\n  ],\n  "a": "é\u007f"\n}')
+  assert.equal(r("{{ x | tojson(sort_keys=true, ensure_ascii=true, separators=(',', ':')) }}", '{"x": {"b": 1.0, "a": "é"}}'), '{"a":"\\u00e9","b":1.0}')
+  assert.equal(r('{{ 1.0 | tojson }} {{ 2 | tojson }}', '{}'), '1.0 2')
+  // Computing with an integer JS can't hold is an error, not another number.
+  assert.match(r('{{ x + 1 }}', '{"x": 12345678901234567890}'), /^runtime: .*9,007,199,254,740,991/)
+})
+
+test('numbers in tools and tool_calls, and text that looks like numbers', () => {
+  const tools = parsePython('[{"name": "f", "parameters": {"minimum": 1.0, "maximum": 12345678901234567890, "note": "1.0 \\"2.0\\" 3e5"}}]') as unknown[]
+  const out = render({ template: '{{ tools | tojson }}{{ messages[0].tool_calls[0].arguments | tojson }}', messages: [{ role: 'assistant', content: '', tool_calls: parsePython('[{"arguments": {"t": 20.0}}]') as unknown[] }], tools, addGenerationPrompt: false })
+  assert.deepEqual(out, { ok: true, text: '[{"name": "f", "parameters": {"minimum": 1.0, "maximum": 12345678901234567890, "note": "1.0 \\"2.0\\" 3e5"}}]{"t": 20.0}' })
+  for (const bad of ['[1.]', '[01]', '{"a": 1.0', '1.0.0', '[NaN]', '']) assert.throws(() => parsePython(bad), SyntaxError, bad)
+  for (const ok of ['{"a": [1, 2.5, "x", null, true, {"b": -3}]}', '[]', '"1.0"', '1.5']) assert.deepEqual(parsePython(ok), JSON.parse(ok))
 })
