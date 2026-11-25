@@ -28,7 +28,7 @@ test('#4 unreadable tools JSON gives no prompt and no clean verdict', async ({ p
   await expect(page.getByRole('button', { name: 'Copy', exact: true })).toHaveCount(0)
 })
 
-test.fail('#5 the lab keeps working when the state cannot be stored', async ({ page }) => {
+test('#5 the lab keeps working when the state cannot be stored', async ({ page }) => {
   await page.addInitScript(() => { Storage.prototype.setItem = () => { throw new DOMException('full', 'QuotaExceededError') } })
   await openLab(page)
   await expect(page.getByRole('heading', { name: 'Conversation' })).toBeVisible()

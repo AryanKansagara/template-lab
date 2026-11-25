@@ -171,3 +171,37 @@ test('each kind of unreadable input withholds the prompt, tokens and comparison 
   await expect(page.locator('.cmp-delta')).toContainText('No delta: the input can’t be read')
   await expect(page.locator('.cmp-grid .rendered')).toHaveCount(0)
 })
+
+const UNSAVED = 'This browser can’t save your setup'
+
+test('a setup over the storage quota renders, says it is not saved, and recovers', async ({ page }) => {
+  await openLab(page)
+  await paste(page, '{{ messages[0].content | length }}')
+  // Leave less than 100,000 characters of the 5 MB quota, so the next message does not fit.
+  await page.evaluate(() => {
+    for (let step = 1 << 22; step >= 1 << 16; step /= 2) {
+      try {
+        localStorage.setItem('filler', (localStorage.getItem('filler') ?? '') + 'x'.repeat(step))
+      } catch { /* full: try a smaller step */ }
+    }
+  })
+  await page.getByLabel('Message 1 content').fill('x'.repeat(200_000))
+  await expect(page.getByText(UNSAVED)).toBeVisible()
+  await expect.poll(() => prompt(page)).toBe('200000')
+  await page.getByLabel('Message 1 content').fill('short')
+  await expect(page.getByText(UNSAVED)).toHaveCount(0)
+  expect((await stored(page))?.msgs[0].content).toBe('short')
+  await page.reload()
+  await expect(page.getByLabel('Message 1 content')).toHaveValue('short')
+})
+
+test('the app works when storage is blocked altogether', async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('denied', 'SecurityError') } }))
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Switch to dark theme' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme-mode', 'dark')
+  await openLab(page)
+  await expect(page.getByText(UNSAVED)).toBeVisible()
+  await paste(page, 'ok')
+  await expect.poll(() => prompt(page)).toBe('ok')
+})
