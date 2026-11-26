@@ -100,7 +100,7 @@ test.fail('#13 a system message in the wrong place is not called a missing syste
   await expect(issue(page, 'Template raised')).not.toContainText('no system role', { timeout: 3000 })
 })
 
-test.fail('#14 JSON numbers keep their Python form', async ({ page }) => {
+test('#14 JSON numbers keep their Python form', async ({ page }) => {
   await openLab(page)
   await paste(page, '{{ x | tojson }}')
   await page.getByLabel('Extra kwargs').fill('{"x": [1.0, 12345678901234567890]}')

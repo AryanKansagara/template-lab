@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { chooseTemplate, DEFAULT_MODELS, fetchModelTemplate, HubError, parseModelRef, refLabel, type ModelTemplate, type TemplateChoice } from './lib/hub.ts'
 import { CHATML_FALLBACK, diff, diffUnits, lint, render, templateKwargs, type ChatMessage, type Issue, type RenderResult, type Role, type SpecialTokens } from './lib/template.ts'
+import { parsePython, PyFloat } from './lib/json.ts'
 import { decodeState, encodeState } from './lib/share.ts'
 import { SAMPLES, WEATHER_TOOLS, type UIMsg } from './samples.ts'
 import { tokenizerAddsBos, useTokenizer, type TokState } from './tokenizer.ts'
@@ -112,12 +113,14 @@ function useHubModel(id: string): HubState {
 function parseJson(label: string, text: string, errors: string[]): unknown {
   if (!text.trim()) return undefined
   try {
-    return JSON.parse(text)
+    return parsePython(text)
   } catch (e) {
     errors.push(`${label}: ${(e as Error).message}`)
     return undefined
   }
 }
+
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof PyFloat)
 
 function toChat(msgs: UIMsg[], errors: string[]): ChatMessage[] {
   return msgs.map((m, i) => {
@@ -263,13 +266,13 @@ export default function Lab() {
     const tools = deferred.toolsOn ? parseJson('Tools', deferred.tools, errs) : undefined
     if (tools !== undefined && !Array.isArray(tools)) errs.push('Tools must be a JSON array')
     // transformers: "Tools should either be a JSON schema, or a callable function".
-    if (Array.isArray(tools)) tools.forEach((t, i) => (!t || typeof t !== 'object' || Array.isArray(t)) && errs.push(`Tools: item #${i + 1} must be a JSON object`))
-    if (kwargs !== undefined && (typeof kwargs !== 'object' || Array.isArray(kwargs) || kwargs === null)) errs.push('Extra kwargs must be a JSON object')
+    if (Array.isArray(tools)) tools.forEach((t, i) => !isObject(t) && errs.push(`Tools: item #${i + 1} must be a JSON object`))
+    if (kwargs !== undefined && !isObject(kwargs)) errs.push('Extra kwargs must be a JSON object')
     return {
       errs,
       messages: toChat(deferred.msgs, errs),
       tools: Array.isArray(tools) ? tools : null,
-      kwargs: kwargs && typeof kwargs === 'object' && !Array.isArray(kwargs) ? (kwargs as Record<string, unknown>) : {},
+      kwargs: isObject(kwargs) ? kwargs : {},
       addGenerationPrompt: deferred.agp,
     }
   }, [deferred.kwargs, deferred.tools, deferred.toolsOn, deferred.msgs, deferred.agp])
