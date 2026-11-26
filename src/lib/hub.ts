@@ -137,10 +137,27 @@ async function get(ref: ModelRef, file: string, f: Fetch): Promise<Response | nu
 export function parseTemplates(v: unknown): NamedTemplate[] {
   if (typeof v === 'string') return v.trim() ? [{ name: 'default', template: v }] : []
   if (Array.isArray(v)) {
-    const out = v.filter((t) => t && typeof t.template === 'string').map((t) => ({ name: String(t.name ?? 'default'), template: t.template as string }))
-    return out.sort((a, b) => Number(b.name === 'default') - Number(a.name === 'default'))
+    // transformers turns the list into a dict, so the last entry of a name wins.
+    const byName = new Map<string, NamedTemplate>()
+    for (const t of v) if (t && typeof t.template === 'string') byName.set(String(t.name ?? 'default'), { name: String(t.name ?? 'default'), template: t.template })
+    return [...byName.values()].sort((a, b) => Number(b.name === 'default') - Number(a.name === 'default'))
   }
   return []
+}
+
+export type TemplateChoice = { name: string; template: string } | { name: null; error: string }
+
+/**
+ * The template apply_chat_template() uses, following transformers' get_chat_template: an explicit pick, else tool_use
+ * when tools are passed, else default, else an error. Null when the repo has no template at all.
+ */
+export function chooseTemplate(templates: NamedTemplate[], hasTools: boolean, pick = ''): TemplateChoice | null {
+  if (!templates.length) return null
+  const named = (n: string) => templates.find((t) => t.name === n)
+  const hit = named(pick) ?? (hasTools ? named('tool_use') : undefined) ?? named('default')
+  if (hit) return hit
+  const names = templates.map((t) => `'${t.name}'`).sort().join(', ')
+  return { name: null, error: `This model has multiple chat templates with no default specified! Please either pass a chat template or the name of the template you wish to use to the \`chat_template\` argument. Available template names are [${names}].` }
 }
 
 export function parseConfig(id: string, cfg: Record<string, unknown>, revision = 'main'): ModelTemplate {

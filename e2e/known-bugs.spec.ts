@@ -57,7 +57,7 @@ test('#7 the revision in a Hub URL is the one that is loaded', async ({ page, hu
   await expect.poll(() => prompt(page)).toBe('V1')
 })
 
-test.fail('#8 tool_use is used when tools are on', async ({ page }) => {
+test('#8 tool_use is used when tools are on', async ({ page }) => {
   await openLab(page)
   await loadModel(page, 'test/named')
   await setSwitch(page, 'tools', true)

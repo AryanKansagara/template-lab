@@ -27,8 +27,8 @@ export interface RenderInput {
   specials?: SpecialTokens
 }
 
-/** `input` = the tools, kwargs or tool_calls JSON could not be read, so nothing was rendered. */
-export type RenderError = { kind: 'parse' | 'raise' | 'runtime' | 'input'; message: string }
+/** Nothing was rendered for `input` (the tools, kwargs or tool_calls JSON can't be read) and `choice` (no named template applies). */
+export type RenderError = { kind: 'parse' | 'raise' | 'runtime' | 'input' | 'choice'; message: string }
 export type RenderResult = { ok: true; text: string } | { ok: false; error: RenderError }
 
 /** What transformers < 4.43 silently used when a repo had no chat_template. */

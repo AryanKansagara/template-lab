@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
-import { DEFAULT_MODELS, fetchModelTemplate, HubError, parseModelRef, refLabel, type ModelTemplate } from './lib/hub.ts'
+import { chooseTemplate, DEFAULT_MODELS, fetchModelTemplate, HubError, parseModelRef, refLabel, type ModelTemplate, type TemplateChoice } from './lib/hub.ts'
 import { CHATML_FALLBACK, diff, diffUnits, lint, render, templateKwargs, type ChatMessage, type Issue, type RenderResult, type Role, type SpecialTokens } from './lib/template.ts'
 import { decodeState, encodeState } from './lib/share.ts'
 import { SAMPLES, WEATHER_TOOLS, type UIMsg } from './samples.ts'
@@ -11,7 +11,8 @@ interface LabState {
   model: string
   /** user-edited / pasted template; null = use the Hub one */
   override: string | null
-  tplName: string
+  /** named template picked in the menu; '' = the one transformers would use */
+  tplPick: string
   pasteBos: string
   pasteEos: string
   compare: string
@@ -26,7 +27,7 @@ interface LabState {
 const DEFAULT: LabState = {
   model: 'Qwen/Qwen2.5-7B-Instruct',
   override: null,
-  tplName: 'default',
+  tplPick: '',
   pasteBos: '',
   pasteEos: '',
   compare: 'mistralai/Mistral-7B-Instruct-v0.3',
@@ -45,7 +46,9 @@ function sanitize(raw: unknown): Partial<LabState> {
   for (const [k, v] of Object.entries(raw)) {
     if (k in DEFAULT && typeof v === typeof DEFAULT[k as keyof LabState] && k !== 'msgs' && k !== 'override') out[k] = v
   }
-  const r = raw as { override?: unknown; msgs?: unknown }
+  const r = raw as { override?: unknown; msgs?: unknown; tplName?: unknown }
+  // Before tplPick, 'default' stood for "not picked" too.
+  if (out.tplPick === undefined && typeof r.tplName === 'string' && r.tplName !== 'default') out.tplPick = r.tplName
   if (typeof r.override === 'string') out.override = r.override
   if (Array.isArray(r.msgs)) {
     out.msgs = r.msgs
@@ -137,7 +140,7 @@ interface Built {
   issues: Issue[]
 }
 
-function build(template: string | null, specials: SpecialTokens, specialList: string[], base: Parameters<typeof lint>[0]['input'], addsBos: boolean | null, unreadable: string[]): Built {
+function build(template: string | null, specials: SpecialTokens, specialList: string[], base: Parameters<typeof lint>[0]['input'], addsBos: boolean | null, unreadable: string[], noChoice?: string): Built {
   // A prompt rendered without the part that can't be read would look right and be wrong.
   if (unreadable.length)
     return {
@@ -146,6 +149,14 @@ function build(template: string | null, specials: SpecialTokens, specialList: st
       specialList,
       result: { ok: false, error: { kind: 'input', message: unreadable.join('; ') } },
       issues: unreadable.map((detail, i) => ({ id: `input-${i}`, severity: 'error', title: 'Input can’t be read', detail: `${detail}. Nothing is rendered or checked until it is fixed.` })),
+    }
+  if (noChoice)
+    return {
+      template,
+      specials,
+      specialList,
+      result: { ok: false, error: { kind: 'choice', message: noChoice } },
+      issues: [{ id: 'no-default', severity: 'error', title: 'No default template', detail: `apply_chat_template() raises ValueError: ${noChoice}` }],
     }
   const input = { ...base, specials }
   return {
@@ -264,7 +275,11 @@ export default function Lab() {
   }, [deferred.kwargs, deferred.tools, deferred.toolsOn, deferred.msgs, deferred.agp])
   errors.push(...input.errs)
 
-  const hubTemplate = modelA ? (modelA.templates.find((t) => t.name === deferred.tplName) ?? modelA.templates[0])?.template ?? null : null
+  // transformers tests `tools is not None`, so an empty list still selects tool_use.
+  const choiceA = modelA && chooseTemplate(modelA.templates, input.tools !== null, deferred.tplPick)
+  const choiceB = modelB && chooseTemplate(modelB.templates, input.tools !== null)
+  const hubTemplate = choiceA && choiceA.name !== null ? choiceA.template : null
+  const noChoice = (c: TemplateChoice | null) => (c && c.name === null ? c.error : undefined)
   const pasteSpecials: SpecialTokens = { bos_token: deferred.pasteBos || undefined, eos_token: deferred.pasteEos || undefined }
 
   const A = useMemo<Built | null>(() => {
@@ -273,14 +288,15 @@ export default function Lab() {
     const specials = modelA && mode === 'hub' ? modelA.specials : pasteSpecials
     const list = modelA && mode === 'hub' ? modelA.specialTokens : Object.values(pasteSpecials).filter(Boolean) as string[]
     const adds = tokA.status === 'ready' ? tokenizerAddsBos(tokA.tok, specials.bos_token) : mode === 'hub' ? (modelA?.addBosToken ?? null) : null
-    return build(mode === 'paste' ? deferred.override ?? '' : template, specials, list, input, adds, input.errs)
+    return build(mode === 'paste' ? deferred.override ?? '' : template, specials, list, input, adds, input.errs, mode === 'hub' && deferred.override === null ? noChoice(choiceA) : undefined)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, modelA, hubTemplate, deferred.override, deferred.pasteBos, deferred.pasteEos, input, tokA])
+  }, [mode, modelA, hubTemplate, deferred.tplPick, deferred.override, deferred.pasteBos, deferred.pasteEos, input, tokA])
 
   const B = useMemo<Built | null>(() => {
     if (!modelB) return null
     const adds = tokB.status === 'ready' ? tokenizerAddsBos(tokB.tok, modelB.specials.bos_token) : modelB.addBosToken
-    return build(modelB.templates[0]?.template ?? null, modelB.specials, modelB.specialTokens, input, adds, input.errs)
+    return build(choiceB && choiceB.name !== null ? choiceB.template : null, modelB.specials, modelB.specialTokens, input, adds, input.errs, noChoice(choiceB))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelB, input, tokB])
 
   const tokensA = useMemo(() => (A?.result.ok ? tokenize(tokA, A.result.text) : null), [A, tokA])
@@ -305,7 +321,7 @@ export default function Lab() {
     if (!clean) return
     setDraft(clean)
     setMode('hub')
-    set({ model: clean, override: null, tplName: 'default' })
+    set({ model: clean, override: null, tplPick: '' })
   }
 
   function loadSample(id: string) {
@@ -395,7 +411,7 @@ export default function Lab() {
                 Llama-3.1 (gated)
               </button>
             </div>
-            <ModelMeta hub={hubA} onPick={loadModel} override={state.override !== null} onReset={() => set({ override: null })} tplName={state.tplName} onTpl={(n) => set({ tplName: n })} />
+            <ModelMeta hub={hubA} onPick={loadModel} override={state.override !== null} onReset={() => set({ override: null })} tplPick={state.tplPick} auto={modelA && (chooseTemplate(modelA.templates, input.tools !== null)?.name ?? 'none')} onTpl={(n) => set({ tplPick: n })} />
           </>
         ) : (
           <div className="paste-meta">
@@ -591,7 +607,7 @@ export default function Lab() {
                 {hubB.status === 'error' && <HubErrorCard error={hubB.error} onPick={(id) => { setCompareDraft(id); set({ compare: id }) }} />}
                 {hubB.status === 'loading' && <div className="skeleton" />}
                 {state.tokenize && [tokA, tokB].map((t, i) => t.status === 'error' && <p key={i} className="err-text small">{t.message}</p>)}
-                {A && B && <Compare a={A} b={B} nameA={state.model ? label(state.model) : 'Pasted template'} nameB={label(state.compare)} tokA={tokensA?.ids.length} tokB={tokensB?.ids.length} showWs={showWs} tokenizeOn={state.tokenize} onTokenize={() => set({ tokenize: true })} />}
+                {A && B && <Compare a={A} b={B} nameA={state.model ? label(state.model) : 'Pasted template'} nameB={label(state.compare) + (modelB && modelB.templates.length > 1 && choiceB?.name ? ` · ${choiceB.name}` : '')} tokA={tokensA?.ids.length} tokB={tokensB?.ids.length} showWs={showWs} tokenizeOn={state.tokenize} onTokenize={() => set({ tokenize: true })} />}
               </div>
             )}
 
@@ -625,7 +641,7 @@ export default function Lab() {
 
 // ---------------------------------------------------------------- pieces
 
-function ModelMeta({ hub, onPick, override, onReset, tplName, onTpl }: { hub: HubState; onPick: (id: string) => void; override: boolean; onReset: () => void; tplName: string; onTpl: (n: string) => void }) {
+function ModelMeta({ hub, onPick, override, onReset, tplPick, auto, onTpl }: { hub: HubState; onPick: (id: string) => void; override: boolean; onReset: () => void; tplPick: string; auto: string | null; onTpl: (n: string) => void }) {
   if (hub.status === 'loading') return <div className="meta"><span className="spinner" /> Fetching tokenizer_config.json…</div>
   if (hub.status === 'error') return <HubErrorCard error={hub.error} onPick={onPick} />
   if (hub.status !== 'ready') return null
@@ -635,10 +651,11 @@ function ModelMeta({ hub, onPick, override, onReset, tplName, onTpl }: { hub: Hu
       <a className="meta-id mono" href={`https://huggingface.co/${m.id}${m.revision === 'main' ? '' : `/tree/${encodeURIComponent(m.revision)}`}`} target="_blank" rel="noreferrer">{m.id}</a>
       {m.revision !== 'main' && <span className="tag mono">revision {m.revision}</span>}
       <span className={`tag ${m.source === 'none' ? 'tag-bad' : ''}`}>{m.source === 'none' ? 'no chat_template' : m.source}</span>
-      {m.templates.length > 1 && (
+      {(m.templates.length > 1 || (m.templates.length === 1 && m.templates[0].name !== 'default')) && (
         <label className="select-wrap sm">
           <span className="sr-only">Named template</span>
-          <select value={tplName} onChange={(e) => onTpl(e.target.value)}>
+          <select value={m.templates.some((t) => t.name === tplPick) ? tplPick : ''} onChange={(e) => onTpl(e.target.value)}>
+            <option value="">automatic ({auto})</option>
             {m.templates.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
           </select>
         </label>
@@ -683,9 +700,9 @@ function Output({ built, showWs }: { built: Built; showWs: boolean }) {
   if (!r.ok)
     return (
       <div className={`render-error kind-${r.error.kind}`} role="alert">
-        <span className="badge">{r.error.kind === 'input' ? 'unreadable input' : r.error.kind === 'raise' ? 'raise_exception' : r.error.kind === 'parse' ? 'syntax error' : 'runtime error'}</span>
+        <span className="badge">{r.error.kind === 'input' ? 'unreadable input' : r.error.kind === 'choice' ? 'ValueError' : r.error.kind === 'raise' ? 'raise_exception' : r.error.kind === 'parse' ? 'syntax error' : 'runtime error'}</span>
         <p className="mono">{r.error.message}</p>
-        <p className="muted small">{r.error.kind === 'input' ? 'Fix the JSON on the left to render the prompt.' : r.error.kind === 'raise' ? 'The template itself rejected this conversation. transformers would throw TemplateError here too.' : 'This is what apply_chat_template() would fail with.'}</p>
+        <p className="muted small">{r.error.kind === 'input' ? 'Fix the JSON on the left to render the prompt.' : r.error.kind === 'choice' ? 'This is what apply_chat_template() would fail with unless a template is named.' : r.error.kind === 'raise' ? 'The template itself rejected this conversation. transformers would throw TemplateError here too.' : 'This is what apply_chat_template() would fail with.'}</p>
       </div>
     )
   if (!r.text) return <p className="muted small">The template rendered an empty string.</p>
@@ -749,7 +766,7 @@ function Compare({ a, b, nameA, nameB, tokA, tokB, showWs, tokenizeOn, onTokeniz
           {delta !== null ? (
             <><b className={delta > 0 ? 'up' : delta < 0 ? 'down' : ''}>{delta > 0 ? '+' : ''}{delta}</b><span className="muted small">tokens for B ({tokA ? ((delta / tokA) * 100).toFixed(0) : 0}%)</span></>
           ) : ta === null || tb === null ? (
-            <span className="muted small">{a.result.ok || a.result.error.kind !== 'input' ? 'No delta: a template raised' : 'No delta: the input can’t be read'}</span>
+            <span className="muted small">{[a, b].some((x) => !x.result.ok && x.result.error.kind === 'choice') ? 'No delta: a model has no default template' : a.result.ok || a.result.error.kind !== 'input' ? 'No delta: a template raised' : 'No delta: the input can’t be read'}</span>
           ) : (
             <button className="btn btn-sm" onClick={onTokenize} disabled={tokenizeOn}>{tokenizeOn ? 'Tokenizing…' : 'Exact token counts'}</button>
           )}
